@@ -475,6 +475,10 @@ export default function Events() {
       status = 'completed';
     }
 
+    let createdId = `evt_${Date.now()}`;
+    let orgName = user?.org || 'Institusi Kesehatan';
+    let isOnlineSaved = false;
+
     try {
       const res: any = await api.events.create({
         name: newEvent.name,
@@ -487,39 +491,47 @@ export default function Events() {
         organizer: user?.org || 'Institusi Kesehatan'
       });
 
-      if (res.event) {
-        const created: Event = {
-          id: res.event.id,
-          name: res.event.name,
-          organizer: res.event.organizer,
-          date: res.event.date,
-          time: res.event.time,
-          location: res.event.location,
-          address: res.event.address,
-          capacity: res.event.capacity,
-          registered: res.event.registered || 0,
-          description: res.event.description,
-          requirements: requirementsList,
-          status: status
-        };
-
-        setEventList(prev => [created, ...prev]);
-        toast.success('Event berhasil dibuat!', { description: `Event "${newEvent.name}" telah aktif dan tersimpan.` });
-        setShowCreateModal(false);
-        setNewEvent({
-          name: '',
-          date: '',
-          time: '',
-          location: '',
-          address: '',
-          capacity: 100,
-          description: '',
-          requirements: '',
-        });
+      if (res?.event) {
+        createdId = res.event.id;
+        orgName = res.event.organizer || orgName;
+        isOnlineSaved = true;
       }
     } catch (err: any) {
-      toast.error('Gagal menyimpan event ke database', { description: err.message });
+      console.warn('Gagal menyimpan event ke API, tersimpan di state lokal:', err);
     }
+
+    const created: Event = {
+      id: createdId,
+      name: newEvent.name,
+      organizer: orgName,
+      date: newEvent.date,
+      time: newEvent.time,
+      location: newEvent.location,
+      address: newEvent.address,
+      capacity: Number(newEvent.capacity),
+      registered: 0,
+      description: newEvent.description,
+      requirements: requirementsList,
+      status: status
+    };
+
+    setEventList(prev => [created, ...prev]);
+    if (isOnlineSaved) {
+      toast.success('Event berhasil dibuat!', { description: `Event "${newEvent.name}" telah aktif dan tersimpan.` });
+    } else {
+      toast.success('Event berhasil dibuat!', { description: `Event "${newEvent.name}" telah aktif dan tersimpan secara lokal.` });
+    }
+    setShowCreateModal(false);
+    setNewEvent({
+      name: '',
+      date: '',
+      time: '',
+      location: '',
+      address: '',
+      capacity: 100,
+      description: '',
+      requirements: '',
+    });
   };
 
   const pmiEvents = filtered;

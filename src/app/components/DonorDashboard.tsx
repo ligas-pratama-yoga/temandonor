@@ -587,9 +587,9 @@ export default function DonorDashboard() {
                 <div className={`p-3 bg-white border border-border rounded-xl group-hover:bg-[#F4F4F8] transition-colors shadow-sm`}>
                   <menu.icon className={`w-5 h-5 ${menu.color}`} />
                 </div>
-                <div>
-                  <p className="text-sm font-bold text-[#1A1A2E] group-hover:text-[#C0392B] transition-colors" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>{menu.title}</p>
-                  <p className="text-xs text-[#4A4A6A] mt-1">{menu.desc}</p>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <p className="text-sm font-bold text-[#1A1A2E] dark:text-white group-hover:text-[#C0392B] transition-colors" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>{menu.title}</p>
+                  <span className="text-xs text-[#6B6B8A]">· {menu.desc}</span>
                 </div>
               </button>
             ))}

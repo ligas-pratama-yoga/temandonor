@@ -243,17 +243,17 @@ export default function Navigation() {
             )}
 
             {/* Desktop links */}
-            <div className="hidden md:flex items-center gap-0.5 flex-1">
+            <div className="hidden md:flex items-center gap-1 flex-1 overflow-x-auto no-scrollbar">
               {coreLinks.map(({ to, label, icon: Icon }) => (
                 <Link
                   key={to}
                   to={to}
-                  className={`relative flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-all ${isActive(to)
+                  className={`relative flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap flex-shrink-0 transition-all ${isActive(to)
                       ? 'text-[#C0392B] bg-[#FDEDEC]'
                       : 'text-[#4A4A6A] hover:bg-[#F4F4F8] hover:text-[#1A1A2E]'
                     }`}
                 >
-                  <Icon className="w-3.5 h-3.5" />{label}
+                  <Icon className="w-3.5 h-3.5 flex-shrink-0" />{label}
                   {isActive(to) && (
                     <span className="absolute -bottom-[9px] left-1/2 -translate-x-1/2 w-4 h-0.5 bg-[#C0392B] rounded-full" />
                   )}
@@ -264,12 +264,12 @@ export default function Navigation() {
               {isAuthenticated && user && roleNavExtra[user.role] && (
                 <Link
                   to={roleNavExtra[user.role]!.to}
-                  className={`relative flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-all ${isActive(roleNavExtra[user.role]!.to)
+                  className={`relative flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap flex-shrink-0 transition-all ${isActive(roleNavExtra[user.role]!.to)
                       ? 'bg-[#FDEDEC] text-[#C0392B]'
                       : 'text-[#4A4A6A] hover:bg-[#F4F4F8] hover:text-[#1A1A2E]'
                     }`}
                 >
-                  <LayoutDashboard className="w-3.5 h-3.5" />
+                  <LayoutDashboard className="w-3.5 h-3.5 flex-shrink-0" />
                   Dashboard
                   {isActive(roleNavExtra[user.role]!.to) && (
                     <span className="absolute -bottom-[9px] left-1/2 -translate-x-1/2 w-4 h-0.5 bg-[#C0392B] rounded-full" />
@@ -279,7 +279,7 @@ export default function Navigation() {
             </div>
 
             {/* Right: profile or login */}
-            <div className="hidden md:flex items-center gap-3 ml-auto">
+            <div className="hidden md:flex items-center gap-3 ml-auto flex-shrink-0">
               <button
                 onClick={toggleTheme}
                 className="p-2 rounded-xl border border-border hover:border-[#C0392B]/40 hover:bg-[#F4F4F8] transition-all text-[#4A4A6A] hover:text-[#C0392B]"
@@ -298,29 +298,33 @@ export default function Navigation() {
                     onClick={() => setProfileOpen(v => !v)}
                     aria-expanded={profileOpen}
                     aria-label="Buka menu profil"
-                    className="flex items-center gap-2.5 pl-2 pr-3 py-1.5 rounded-xl border border-border hover:border-[#C0392B]/40 hover:shadow-sm transition-all"
+                    className="flex items-center gap-2 pl-2 pr-3 py-1.5 rounded-xl border border-border hover:border-[#C0392B]/40 hover:shadow-sm transition-all whitespace-nowrap"
                   >
-                    <div className="w-7 h-7 rounded-lg flex items-center justify-center text-white text-xs font-bold shadow-sm" style={{ background: roleCfg?.color }}>
+                    <div className="w-7 h-7 rounded-lg flex items-center justify-center text-white text-xs font-bold shadow-sm flex-shrink-0" style={{ background: roleCfg?.color }}>
                       {user.avatar}
                     </div>
-                    <div className="hidden lg:block text-left">
-                      <p className="text-xs font-semibold text-[#1A1A2E] leading-tight">{user.name}</p>
-                      <p className="text-[11px] text-[#9B9BB5] leading-tight">{user.org}</p>
+                    <div className="hidden lg:flex items-center gap-1.5 text-left whitespace-nowrap">
+                      <span className="text-xs font-semibold text-[#1A1A2E] dark:text-white leading-tight">{user.name}</span>
+                      {user.org && (
+                        <span className="text-[11px] text-[#9B9BB5] leading-tight">({user.org})</span>
+                      )}
                     </div>
                     <ChevronDown className={`w-3.5 h-3.5 text-[#9B9BB5] transition-transform duration-200 ${profileOpen ? 'rotate-180' : ''}`} />
                   </button>
 
                   {profileOpen && (
-                    <div className="absolute top-full right-0 mt-2 bg-white dark:bg-[#13131f] border border-border rounded-2xl shadow-xl w-56 overflow-hidden z-50">
+                    <div className="absolute top-full right-0 mt-2 bg-white dark:bg-[#13131f] border border-border rounded-2xl shadow-xl w-60 overflow-hidden z-50">
                       {/* User header */}
                       <div className="px-4 py-3 border-b border-border" style={{ background: roleCfg?.bg }}>
                         <div className="flex items-center gap-3">
-                          <div className="w-9 h-9 rounded-xl flex items-center justify-center text-white font-bold text-sm" style={{ background: roleCfg?.color }}>
+                          <div className="w-9 h-9 rounded-xl flex items-center justify-center text-white font-bold text-sm flex-shrink-0" style={{ background: roleCfg?.color }}>
                             {user.avatar}
                           </div>
-                          <div className="min-w-0">
-                            <p className="text-sm font-bold text-[#1A1A2E] truncate">{user.name}</p>
-                            <p className="text-[11px] truncate" style={{ color: roleCfg?.color }}>{user.org}</p>
+                          <div className="min-w-0 flex items-center gap-1.5 flex-wrap">
+                            <p className="text-sm font-bold text-[#1A1A2E] dark:text-white truncate">{user.name}</p>
+                            {user.org && (
+                              <p className="text-[11px] truncate font-medium" style={{ color: roleCfg?.color }}>({user.org})</p>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -422,9 +426,11 @@ export default function Navigation() {
               <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white font-bold text-sm flex-shrink-0" style={{ background: roleCfg.color }}>
                 {user.avatar}
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-bold text-[#1A1A2E] truncate">{user.name}</p>
-                <p className="text-xs font-medium truncate" style={{ color: roleCfg.color }}>{user.org}</p>
+              <div className="flex-1 min-w-0 flex items-center gap-1.5 flex-wrap">
+                <p className="text-sm font-bold text-[#1A1A2E] dark:text-white truncate">{user.name}</p>
+                {user.org && (
+                  <span className="text-xs font-medium truncate" style={{ color: roleCfg.color }}>({user.org})</span>
+                )}
               </div>
             </div>
           )}
