@@ -1,8 +1,0 @@
-fastapi
-uvicorn
-xgboost
-lightgbm
-pandas
-scikit-learn
-pydantic
-python-dotenv
