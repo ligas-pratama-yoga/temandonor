@@ -506,6 +506,9 @@ export default function PMIDashboard() {
 
     // 1. Update status permintaan darah & kurangi stok spesifik
     setRequests(prev => prev.map(r => r.id === approvingRequestId ? { ...r, status: 'diproses' as const } : r));
+    const targetBlood = stocks.find(s => s.type === req.bloodType);
+    const newStockVal = targetBlood ? Math.max(0, targetBlood.stock - req.qty) : 0;
+
     setStocks(prev => prev.map(s => {
       if (s.type === req.bloodType) {
         // Hapus kantong spesifik yang dipilih dari batches
@@ -578,7 +581,19 @@ export default function PMIDashboard() {
         .catch(e => console.warn('Gagal sync status ke API:', e)),
       api.orders.createDelivery(newDelivery)
         .catch(e => console.warn('Gagal sync delivery ke API:', e)),
+      api.stock.updatePMIStock(
+        myPmiName,
+        req.bloodType,
+        newStockVal,
+        'used_patient',
+        `Pengiriman ${req.qty} kantong darah ${req.bloodType} ke ${req.hospital} (Driver: ${selectedDriver.name})`
+      ).catch(e => console.warn('Gagal update stok pasca pengiriman:', e))
     ]);
+
+    // Refresh ledger secara background
+    api.stock.getLedger().then(d => {
+      if (Array.isArray(d)) setLedger(d);
+    }).catch(() => {});
 
     // 4. Beri feedback sukses
     toast.success(`Permintaan disetujui! Driver "${selectedDriver.name}" telah ditugaskan.`);
@@ -784,7 +799,7 @@ export default function PMIDashboard() {
     }
   };
 
-  const handleDiscardExpired = (type: string) => {
+  const handleDiscardExpired = async (type: string) => {
     const item = stocks.find(s => s.type === type);
     if (!item) return;
 
@@ -801,13 +816,13 @@ export default function PMIDashboard() {
     const discardQty = expiredQtyFromBatches > 0 ? expiredQtyFromBatches : item.expiringSoon;
 
     if (discardQty > 0) {
+      const newStock = Math.max(0, item.stock - discardQty);
+      const newExpiringSoon = Math.max(0, item.expiringSoon - discardQty);
+      const pct = Math.round((newStock / item.target) * 100);
+      const newStatus = pct >= 60 ? 'good' : pct >= 30 ? 'low' : 'critical';
+
       setStocks(prev => prev.map(s => {
         if (s.type === type) {
-          const newStock = Math.max(0, s.stock - discardQty);
-          const newExpiringSoon = Math.max(0, s.expiringSoon - discardQty);
-          // Recalculate status
-          const pct = Math.round((newStock / s.target) * 100);
-          const newStatus = pct >= 60 ? 'good' : pct >= 30 ? 'low' : 'critical';
           return {
             ...s,
             stock: newStock,
@@ -819,6 +834,21 @@ export default function PMIDashboard() {
         }
         return s;
       }));
+
+      try {
+        await api.stock.updatePMIStock(
+          myPmiName,
+          type,
+          newStock,
+          'expired',
+          `Pembuangan ${discardQty} kantong kadaluarsa golongan ${type}`
+        );
+        const d = await api.stock.getLedger().catch(() => []);
+        setLedger(Array.isArray(d) ? d : []);
+      } catch (err: any) {
+        console.warn('Gagal mencatat pembuangan stok ke backend:', err);
+      }
+
       toast.success(`Berhasil membuang ${discardQty} kantong darah golongan ${type} yang kadaluarsa.`);
     } else {
       toast.error(`Tidak ditemukan stok kadaluarsa untuk golongan darah ${type}.`);
@@ -907,11 +937,9 @@ export default function PMIDashboard() {
         }));
       }
 
-      // Refresh ledger kalau tab-nya aktif
-      if (activeTab === 'ledger') {
-        const d = await api.stock.getLedger();
-        setLedger(Array.isArray(d) ? d : []);
-      }
+      // Selalu refresh riwayat stok (ledger) agar data masuk/keluar langsung muncul
+      const d = await api.stock.getLedger().catch(() => []);
+      setLedger(Array.isArray(d) ? d : []);
     } catch (e: any) {
       toast.error('Gagal: ' + (e.message || 'Gagal memperbarui stok'));
     } finally {
@@ -962,6 +990,9 @@ export default function PMIDashboard() {
       );
       await Promise.all(updatePromises);
       setIsDirty(false);
+      // Refresh ledger
+      const d = await api.stock.getLedger().catch(() => []);
+      setLedger(Array.isArray(d) ? d : []);
       toast.success('Stok berhasil disimpan ke database!');
     } catch (err: any) {
       toast.error('Gagal menyimpan stok: ' + err.message);
@@ -1058,6 +1089,26 @@ export default function PMIDashboard() {
         if (alive) setBroadcastLogs([]);
       } finally {
         if (alive) setIsLoadingBroadcastLogs(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [activeTab]);
+
+  // ─── Effect load ledger ketika activeTab === 'ledger' ───
+  useEffect(() => {
+    if (activeTab !== 'ledger') return;
+    let alive = true;
+    (async () => {
+      setIsLoadingLedger(true);
+      try {
+        const d = await api.stock.getLedger();
+        if (alive) {
+          setLedger(Array.isArray(d) ? d : []);
+        }
+      } catch (err) {
+        console.warn('Gagal memuat riwayat stok:', err);
+      } finally {
+        if (alive) setIsLoadingLedger(false);
       }
     })();
     return () => { alive = false; };

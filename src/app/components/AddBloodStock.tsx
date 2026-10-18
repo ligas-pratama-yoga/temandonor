@@ -41,6 +41,15 @@ export default function AddBloodStock() {
     fetchRecentSubmissions();
   }, []);
 
+  useEffect(() => {
+    if (user) {
+      setFormData(prev => ({
+        ...prev,
+        pmiName: prev.pmiName || user.org || user.name || 'PMI Kota Surabaya'
+      }));
+    }
+  }, [user]);
+
   const handleChange = (field: string, value: string) => setFormData((p) => ({ ...p, [field]: value }));
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -52,19 +61,32 @@ export default function AddBloodStock() {
     setLoading(true);
 
     const qtyNum = parseInt(formData.quantity) || 0;
+    const pmiName = formData.pmiName || user?.org || user?.name || 'PMI Kota Surabaya';
+    const now = new Date().toISOString().slice(0, 10);
+    const defaultExp = new Date(Date.now() + 35 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const expDate = formData.expiryDate || defaultExp;
 
     try {
-      await api.stock.updatePMIStock(formData.pmiName || user?.org || 'PMI', formData.bloodType, qtyNum);
+      await api.stock.addLedger({
+        blood_type: formData.bloodType,
+        quantity: qtyNum,
+        source_type: 'donor',
+        source_name: pmiName,
+        collected_at: now,
+        exp_date: expDate,
+        reason: 'donor_event',
+        reason_detail: formData.notes ? `${formData.notes} (${pmiName})` : `Pemasukan stok ${formData.bloodType} (${qtyNum} ktg) oleh ${pmiName}`
+      });
 
       setRecentSubmissions(prev => [
-        { hospital: formData.pmiName || user?.org || 'PMI', bloodType: formData.bloodType, quantity: qtyNum, time: 'Baru saja' },
+        { hospital: pmiName, bloodType: formData.bloodType, quantity: qtyNum, time: 'Baru saja' },
         ...prev.slice(0, 4)
       ]);
 
       toast.success('Stok darah berhasil ditambahkan!', {
-        description: `${formData.quantity} kantong ${formData.bloodType} berhasil disimpan`,
+        description: `${formData.quantity} kantong ${formData.bloodType} berhasil disimpan dan dicatat di riwayat stok`,
       });
-      setFormData({ pmiName: '', bloodType: '', quantity: '', expiryDate: '', notes: '' });
+      setFormData(prev => ({ ...prev, bloodType: '', quantity: '', expiryDate: '', notes: '' }));
     } catch (err: any) {
       toast.error('Gagal menyimpan stok darah', { description: err.message });
     } finally {
