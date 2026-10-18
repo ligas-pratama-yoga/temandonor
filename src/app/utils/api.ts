@@ -1,0 +1,401 @@
+// Client API Layer - Connecting React Frontend to Express + MySQL Backend
+
+const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:3001/api';
+
+// Helper for JWT Auth Headers
+function getAuthHeaders(): HeadersInit {
+  const token = localStorage.getItem('bloodlink_token');
+  return {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {})
+  };
+}
+
+// Generic Fetch Wrapper with Fallback Support
+export async function apiFetch<T>(endpoint: string, options: RequestInit = {}, fallbackData?: T): Promise<T> {
+  try {
+    const res = await fetch(`${API_BASE_URL}${endpoint}`, {
+      ...options,
+      headers: {
+        ...getAuthHeaders(),
+        ...options.headers
+      }
+    });
+
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson.error || `HTTP ${res.status}: ${res.statusText}`);
+    }
+
+    return await res.json();
+  } catch (err) {
+    console.warn(`[API] Fallback triggered for ${endpoint}:`, (err as Error).message);
+    if (fallbackData !== undefined) {
+      return fallbackData;
+    }
+    throw err;
+  }
+}
+
+// API Services
+export const api = {
+  baseUrl: API_BASE_URL,
+  // Auth API
+  auth: {
+    login: (email: string, password: string) =>
+      apiFetch('/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ email, password })
+      }),
+
+    register: (data: { name: string; email: string; password: string; role?: string; blood_type?: string; org?: string; phone?: string; address?: string; latitude?: number; longitude?: number }) =>
+      apiFetch('/auth/register', {
+        method: 'POST',
+        body: JSON.stringify(data)
+      }),
+
+    getProfile: () => apiFetch('/auth/me'),
+
+    updateProfile: (name: string, email: string) =>
+      apiFetch('/auth/me', {
+        method: 'PUT',
+        body: JSON.stringify({ name, email })
+      })
+  },
+
+  // Donors API
+  donors: {
+    // Backend membaca user dari JWT — email parameter diabaikan tapi tetap diterima untuk kompatibilitas
+    getProfile: (_email?: string, fallback?: any) =>
+      apiFetch('/donors/profile', {}, fallback),
+
+    getHistory: (_email?: string, fallback?: any[]) =>
+      apiFetch('/donors/history', {}, fallback),
+
+    getEligibility: (fallback?: any) =>
+      apiFetch('/donors/eligibility', {}, fallback),
+
+    getLeaderboard: (fallback?: any) =>
+      apiFetch('/donors/leaderboard', {}, fallback),
+
+    getAchievements: (fallback?: any[]) =>
+      apiFetch('/donors/achievements', {}, fallback),
+
+    resetAchievements: () =>
+      apiFetch('/donors/reset-achievements', {
+        method: 'POST',
+        body: JSON.stringify({})
+      }),
+
+    updateProfile: (data: any) =>
+      apiFetch('/donors/profile', {
+        method: 'PUT',
+        body: JSON.stringify(data)
+      }),
+
+    emergencyResponse: (data: { notification_id?: string; message?: string }) =>
+      apiFetch('/donors/emergency-response', {
+        method: 'POST',
+        body: JSON.stringify(data)
+      }),
+
+    requestEligibleReminder: (fallback?: any) =>
+      apiFetch('/donors/eligible-reminder', {
+        method: 'POST',
+        body: JSON.stringify({})
+      }, fallback)
+  },
+
+  // Events API
+  events: {
+    getAll: (fallback?: any[]) => apiFetch('/events', {}, fallback),
+    getMine: (fallback?: any[]) => apiFetch('/events/mine', {}, fallback),
+
+    create: (data: { name: string; date: string; time?: string; location: string; address?: string; description?: string; capacity?: number; organizer?: string }) =>
+      apiFetch('/events', {
+        method: 'POST',
+        body: JSON.stringify(data)
+      }),
+
+    update: (id: string, data: Partial<{ name: string; date: string; time: string; location: string; address: string; description: string; capacity: number; status: string }>) =>
+      apiFetch(`/events/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data)
+      }),
+
+    delete: (id: string) =>
+      apiFetch(`/events/${id}`, { method: 'DELETE' }),
+
+    register: (data: { event_id: number; donor_name: string; donor_email: string; blood_type?: string }) =>
+      apiFetch('/events/register', {
+        method: 'POST',
+        body: JSON.stringify(data)
+      }),
+
+    checkIn: (data: { qr_data?: string; booking_id?: string }) =>
+      apiFetch('/events/checkin', {
+        method: 'POST',
+        body: JSON.stringify(data)
+      }),
+
+    getMyBookings: (fallback?: any[]) =>
+      apiFetch('/events/my-bookings', {}, fallback),
+
+    cancelBooking: (id: string) =>
+      apiFetch(`/events/bookings/${id}`, { method: 'DELETE' })
+  },
+
+  // Notifications API
+  notifications: {
+    getAll: (fallback?: any[]) => apiFetch('/notifications', {}, fallback),
+
+    send: (data: { user_id: string; type: string; title: string; message: string }) =>
+      apiFetch('/notifications', {
+        method: 'POST',
+        body: JSON.stringify(data)
+      }),
+
+    broadcast: (data: {
+      blood_type: string;
+      title: string;
+      message: string;
+      urgency_level?: 'routine' | 'urgent' | 'code-red';
+      radius_km?: number;
+      lat?: number;
+      lng?: number;
+      reason?: string;
+    }) =>
+      apiFetch('/notifications/broadcast', {
+        method: 'POST',
+        body: JSON.stringify(data)
+      }),
+
+    broadcastPreview: (data: {
+      blood_type: string;
+      radius_km?: number;
+      lat?: number;
+      lng?: number;
+    }) =>
+      apiFetch('/notifications/broadcast-preview', {
+        method: 'POST',
+        body: JSON.stringify(data)
+      }, { eligible: 0, registered_total: 0, filtered_out: 0 }),
+
+    listBroadcastLogs: (scope?: 'own' | 'all') =>
+      apiFetch(`/notifications/broadcast-logs${scope ? `?scope=${scope}` : ''}`, { method: 'GET' }, { logs: [], total: 0 }),
+
+    updateBroadcastResponseFollowup: (id: number | string, status: string, notes: string) =>
+      apiFetch(`/notifications/broadcast-response/${id}/followup`, {
+        method: 'POST',
+        body: JSON.stringify({ status, notes })
+      }),
+
+    markRead: (id: string) =>
+      apiFetch(`/notifications/${id}/read`, { method: 'PUT' }),
+
+    markAllRead: () =>
+      apiFetch('/notifications/read-all', { method: 'PUT' }),
+
+    delete: (id: string) =>
+      apiFetch(`/notifications/${id}`, { method: 'DELETE' }),
+
+    deleteAll: () =>
+      apiFetch('/notifications', { method: 'DELETE' })
+  },
+
+
+  // Blood Stock API
+  stock: {
+    getPMIStock: (fallback?: any[]) => apiFetch('/stock/pmi', {}, fallback),
+
+    updatePMIStock: (pmi_name: string, blood_type: string, stock: number, reason?: string, reason_detail?: string) =>
+      apiFetch('/stock/pmi', {
+        method: 'PUT',
+        body: JSON.stringify({ pmi_name, blood_type, stock, reason, reason_detail })
+      }),
+
+    getActivityLogs: (fallback?: any[]) => apiFetch('/stock/activity-logs', {}, fallback),
+
+    getLedger: (params?: { blood_type?: string; direction?: string; limit?: number }) => {
+      const qs = new URLSearchParams();
+      if (params?.blood_type) qs.set('blood_type', params.blood_type);
+      if (params?.direction) qs.set('direction', params.direction);
+      if (params?.limit) qs.set('limit', String(params.limit));
+      return apiFetch(`/stock/ledger${qs.toString() ? '?' + qs.toString() : ''}`, {}, []);
+    },
+
+    addLedger: (data: {
+      blood_type: string; quantity: number; source_type?: string; source_name: string;
+      collected_at: string; exp_date: string; reason?: string; reason_detail?: string;
+    }) => apiFetch('/stock/ledger', { method: 'POST', body: JSON.stringify(data) }),
+
+    scanReceive: (bagCode: string) =>
+      apiFetch('/stock/scan-receive', { method: 'POST', body: JSON.stringify({ bag_code: bagCode }) }),
+
+    getBags: (params?: { blood_type?: string; status?: string }) => {
+      const qs = new URLSearchParams();
+      if (params?.blood_type) qs.set('blood_type', params.blood_type);
+      if (params?.status) qs.set('status', params.status);
+      return apiFetch(`/stock/bags${qs.toString() ? '?' + qs.toString() : ''}`, {}, []);
+    },
+  },
+
+  // Orders & Deliveries API
+  orders: {
+    getRequests: (fallback?: any[]) => apiFetch('/orders/requests', {}, fallback),
+    
+    getPublicRequests: (fallback?: any[]) => apiFetch('/orders/public-requests', {}, fallback),
+
+    createRequest: (data: any) =>
+      apiFetch('/orders/requests', {
+        method: 'POST',
+        body: JSON.stringify(data)
+      }),
+
+    getDeliveries: (fallback?: any[]) => apiFetch('/orders/deliveries', {}, fallback),
+
+    createDelivery: (data: any) =>
+      apiFetch('/orders/deliveries', {
+        method: 'POST',
+        body: JSON.stringify(data)
+      }),
+
+    updateDeliveryStatus: (id: string, data: { status?: string; pct?: number; eta?: string }) =>
+      apiFetch(`/orders/deliveries/${id}/status`, {
+        method: 'PUT',
+        body: JSON.stringify(data)
+      })
+  },
+
+  // Rewards API
+  rewards: {
+    getAll: (fallback?: any[]) => apiFetch('/rewards', {}, fallback),
+
+    redeem: (reward_id: string, donor_email: string) =>
+      apiFetch('/rewards/redeem', {
+        method: 'POST',
+        body: JSON.stringify({ reward_id, donor_email })
+      })
+  },
+
+  // Blood Orders API (pesanan darah RS -> PMI)
+  bloodOrders: {
+    getAll: (fallback?: any[]) => apiFetch('/orders/blood', {}, fallback),
+
+    create: (data: { blood_type: string; qty: number; urgency?: string; pmi?: string }) =>
+      apiFetch('/orders/blood', {
+        method: 'POST',
+        body: JSON.stringify(data)
+      })
+  },
+
+  // Users / Staff API
+  users: {
+    getAll: (role?: string, fallback?: any[]) =>
+      apiFetch(role ? `/users?role=${encodeURIComponent(role)}` : '/users', {}, fallback),
+
+    create: (data: { name: string; email: string; password: string; role?: string; phone?: string; vehicle_no?: string; org?: string; address?: string; latitude?: number; longitude?: number }) =>
+      apiFetch('/users', {
+        method: 'POST',
+        body: JSON.stringify(data)
+      }),
+
+
+    delete: (id: string | number) =>
+      apiFetch(`/users/${id}`, { method: 'DELETE' }),
+
+    updateRequestStatus: (id: string, status: string) =>
+      apiFetch(`/orders/requests/${id}/status`, {
+        method: 'PUT',
+        body: JSON.stringify({ status })
+      })
+  },
+
+  // AI Integration API
+  ai: {
+    matching: (payload: any) =>
+      apiFetch('/ai/matching', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }),
+
+    chat: (messages: any[], extra?: { location?: { lat: number; lng: number } }) =>
+      apiFetch('/ai/chat', {
+        method: 'POST',
+        body: JSON.stringify({ messages, ...(extra || {}) })
+      }),
+
+    searchStock: (payload: { blood_type?: string; qty?: number; lat?: number; lng?: number; role_filter?: string }) =>
+      apiFetch('/ai/search-stock', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      })
+  },
+
+  // Donor Notification & Messaging API
+  donorNotify: {
+    // PMI: Kirim pesan custom ke donor
+    send: (data: {
+      target_type: 'all' | 'blood_type' | 'specific';
+      target_blood_type?: string;
+      recipient_id?: string;
+      title: string;
+      message: string;
+      type?: string;
+      send_email?: boolean;
+      blood_type?: string;
+      qty?: number;
+      hospital?: string;
+      urgency_note?: string;
+      event_id?: number;
+      cta_url?: string;
+      cta_label?: string;
+    }) => apiFetch('/donor-notify/send', { method: 'POST', body: JSON.stringify(data) }),
+
+    // PMI: Undangan event ke donor
+    sendEventInvite: (data: { event_id: number | string; target_blood_type?: string; send_email?: boolean }) =>
+      apiFetch('/donor-notify/event-invite', { method: 'POST', body: JSON.stringify(data) }),
+
+    // PMI: Notifikasi kebutuhan darah mendesak
+    sendBloodNeed: (data: {
+      blood_type: string; qty?: number; patient_name?: string;
+      hospital?: string; urgency_note?: string; send_email?: boolean;
+    }) => apiFetch('/donor-notify/blood-need', { method: 'POST', body: JSON.stringify(data) }),
+
+    // PMI: Pengingat jadwal donor
+    sendScheduleRemind: (data: { event_id: number | string; days_before?: number; send_email?: boolean }) =>
+      apiFetch('/donor-notify/schedule-remind', { method: 'POST', body: JSON.stringify(data) }),
+
+    // Donor: Ambil pesan masuk
+    getMessages: (fallback?: any) =>
+      apiFetch('/donor-notify/messages', {}, fallback || { messages: [], total: 0 }),
+
+    // Donor: Jumlah pesan belum dibaca
+    getUnreadCount: () =>
+      apiFetch('/donor-notify/unread-count', {}, { count: 0 }),
+
+    // Donor: Tandai pesan dibaca
+    markRead: (id: number | string) =>
+      apiFetch(`/donor-notify/messages/${id}/read`, { method: 'PUT' }),
+
+    // Donor: Tandai semua dibaca
+    markAllRead: () =>
+      apiFetch('/donor-notify/messages/read-all', { method: 'PUT' }),
+
+    // Donor: Hapus pesan
+    deleteMessage: (id: number | string) =>
+      apiFetch(`/donor-notify/messages/${id}`, { method: 'DELETE' }),
+
+    // PMI: Riwayat pengiriman
+    getSentHistory: (fallback?: any) =>
+      apiFetch('/donor-notify/sent-history', {}, fallback || { history: [] }),
+
+    // PMI: Ambil list event untuk dropdown
+    getEvents: () =>
+      apiFetch('/donor-notify/events', {}, { events: [] }),
+
+    // Donor: Ambil email simulasi yang terkirim
+    getSimulatedEmails: (fallback?: any) =>
+      apiFetch('/donor-notify/simulated-emails', {}, fallback || { emails: [], total: 0 }),
+  }
+};

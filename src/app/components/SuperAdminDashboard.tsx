@@ -1,0 +1,679 @@
+import { useState, useEffect, useRef } from 'react';
+import {
+  Shield, Users, HeartPulse, MapPin, Plus, Edit2, Trash2,
+  Eye, EyeOff, X, Save,
+  Activity, Map, UserCheck, ToggleLeft, ToggleRight, Search,
+  Phone, Mail
+} from 'lucide-react';
+import { usePageTitle } from '../hooks/usePageTitle';
+import { toast } from 'sonner';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+import 'leaflet.markercluster';
+import 'leaflet.markercluster/dist/MarkerCluster.css';
+import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
+import { api, apiFetch } from '../utils/api';
+import { hashPassword } from '../context/AuthContext';
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+type OrgType = 'pmi';
+type OrgStatus = 'active' | 'inactive';
+
+interface OrgAccount {
+  id: string;
+  name: string;
+  type: OrgType;
+  email: string;
+  address: string;
+  phone: string;
+  coords: [number, number];
+  status: OrgStatus;
+  adminName: string;
+  createdAt: string;
+}
+
+type ActiveTab = 'overview' | 'pmi' | 'map';
+
+// ─── Initial Mock Data ────────────────────────────────────────────────────────
+
+const initialOrgs: OrgAccount[] = [];
+
+// ─── Helper ───────────────────────────────────────────────────────────────────
+
+function generateId(prefix: string) {
+  return `${prefix}${Date.now().toString().slice(-5)}`;
+}
+
+// ─── Empty Form Defaults ──────────────────────────────────────────────────────
+
+const emptyOrg = (type: OrgType): Omit<OrgAccount, 'id' | 'createdAt'> => ({
+  name: '', type, email: '', address: '', phone: '',
+  coords: [-7.2657, 112.7445], status: 'active', adminName: '',
+});
+
+// ─── Map Component ────────────────────────────────────────────────────────────
+
+function AdminMap({ orgs, onPickCoords, centerCoords, tempCoords, tempType, onMarkerDragEnd }: {
+  orgs: OrgAccount[];
+  onPickCoords?: (coords: [number, number]) => void;
+  centerCoords?: [number, number];
+  tempCoords?: [number, number];
+  tempType?: 'pmi';
+  onMarkerDragEnd?: (orgId: string, coords: [number, number]) => void;
+}) {
+  const mapRef = useRef<L.Map | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!containerRef.current || mapRef.current) return;
+
+    const center = centerCoords || [-7.2754, 112.7500];
+    const map = L.map(containerRef.current, {
+      center: center,
+      zoom: centerCoords ? 15 : 13,
+      zoomControl: true,
+    });
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+      maxZoom: 19,
+    }).addTo(map);
+
+    mapRef.current = map;
+
+    // Click to pick coords
+    if (onPickCoords) {
+      map.on('click', (e: L.LeafletMouseEvent) => {
+        onPickCoords([e.latlng.lat, e.latlng.lng]);
+      });
+    }
+
+    return () => {
+      map.remove();
+      mapRef.current = null;
+    };
+  }, []);
+
+  // Render markers whenever data changes
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    // Clear all layers except tile
+    map.eachLayer((layer) => {
+      if (!(layer instanceof L.TileLayer)) {
+        map.removeLayer(layer);
+      }
+    });
+
+    // Create cluster group
+    // @ts-ignore
+    const markers = L.markerClusterGroup({
+      showCoverageOnHover: false,
+      maxClusterRadius: 40,
+    });
+
+    // PMI markers (red)
+    orgs.filter(o => o.type === 'pmi').forEach(org => {
+      const icon = L.divIcon({
+        className: '',
+        html: `<div style="background:#C0392B;color:white;border-radius:50%;width:32px;height:32px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;border:2px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.3)">${org.name.replace('PMI ', 'P')}</div>`,
+        iconSize: [32, 32],
+        iconAnchor: [16, 16],
+      });
+      const marker = L.marker(org.coords, { icon, draggable: !!onMarkerDragEnd })
+        .bindPopup(`<b>${org.name}</b><br/>${org.address}<br/><small>Coordinate: ${org.coords[0].toFixed(4)}, ${org.coords[1].toFixed(4)}</small>`);
+      
+      if (onMarkerDragEnd) {
+        marker.on('dragend', (e) => {
+          const latlng = e.target.getLatLng();
+          onMarkerDragEnd(org.id, [latlng.lat, latlng.lng]);
+        });
+      }
+      markers.addLayer(marker);
+    });
+
+    map.addLayer(markers);
+
+    // Render picker marker
+    if (tempCoords) {
+      const color = '#C0392B';
+      const label = 'PMI';
+      const borderRadius = '50%';
+      const icon = L.divIcon({
+        className: '',
+        html: `<div style="background:${color};color:white;border-radius:${borderRadius};width:32px;height:32px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;border:2px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.5)">${label}</div>`,
+        iconSize: [32, 32],
+        iconAnchor: [16, 16],
+      });
+      const marker = L.marker(tempCoords, { icon, draggable: !!onPickCoords })
+        .addTo(map)
+        .bindPopup(`<b>Lokasi Terpilih</b><br/><small>Coordinate: ${tempCoords[0].toFixed(5)}, ${tempCoords[1].toFixed(5)}</small>`)
+        .openPopup();
+        
+      if (onPickCoords) {
+        marker.on('dragend', (e) => {
+          const latlng = e.target.getLatLng();
+          onPickCoords([latlng.lat, latlng.lng]);
+        });
+      }
+    }
+  }, [orgs, tempCoords, tempType]);
+
+  return (
+    <div className="relative">
+      {onPickCoords && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[1000] bg-[#1A1A2E]/95 text-white text-[11px] font-semibold px-4 py-2 rounded-full shadow-lg flex items-center gap-1.5 pointer-events-none whitespace-nowrap">
+          <MapPin className="w-3.5 h-3.5 text-[#E74C3C]" />
+          Klik pada peta untuk mengubah lokasi koordinat
+        </div>
+      )}
+      <div ref={containerRef} className="w-full rounded-2xl border border-border" style={{ height: onPickCoords ? '220px' : '420px', zIndex: 0 }} />
+    </div>
+  );
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+
+export default function SuperAdminDashboard() {
+  usePageTitle('Super Admin — TemanDonor!');
+
+  const [activeTab, setActiveTab] = useState<ActiveTab>('overview');
+  const [orgs, setOrgs] = useState<OrgAccount[]>(initialOrgs);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // Load akun RS dan PMI dari MySQL API
+  useEffect(() => {
+    async function loadOrgs() {
+      try {
+        const pmiUsers = await api.users.getAll('pmi', []);
+        const mapped = [
+          ...(pmiUsers || []).map((u: any) => ({
+            id: String(u.id),
+            type: 'pmi' as OrgType,
+            name: u.org || u.name,
+            email: u.email,
+            address: u.address || 'Belum diatur',
+            phone: u.phone || '-',
+            coords: [parseFloat(u.latitude) || -7.265, parseFloat(u.longitude) || 112.744] as [number, number],
+            status: 'active' as const,
+            adminName: u.name,
+            createdAt: u.created_at || new Date().toISOString(),
+          }))
+        ];
+        if (mapped.length > 0) setOrgs(mapped);
+      } catch (err) {
+        console.warn('Gagal memuat akun dari API, menggunakan data lokal.');
+      }
+    }
+    loadOrgs();
+  }, []);
+
+  // Modal states
+  const [showOrgModal, setShowOrgModal] = useState(false);
+  const [orgModalType, setOrgModalType] = useState<OrgType>('pmi');
+  const [editingOrg, setEditingOrg] = useState<OrgAccount | null>(null);
+  const [orgForm, setOrgForm] = useState(emptyOrg('pmi'));
+  const [newPassword, setNewPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+
+  // ─── Computed Stats ─────────────────────────────────────────────────────────
+  const pmiList = orgs.filter(o => o.type === 'pmi');
+  const activeOrgs = orgs.filter(o => o.status === 'active').length;
+
+  // ─── Filter ──────────────────────────────────────────────────────────────────
+  const filteredPMI = pmiList.filter(o =>
+    o.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    o.email.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  // ─── Org Handlers ────────────────────────────────────────────────────────────
+  const openAddOrg = (type: OrgType) => {
+    setEditingOrg(null);
+    setOrgModalType(type);
+    setOrgForm(emptyOrg(type));
+    setNewPassword('');
+    setShowOrgModal(true);
+  };
+
+  const openEditOrg = (org: OrgAccount) => {
+    setEditingOrg(org);
+    setOrgModalType(org.type);
+    setOrgForm({ name: org.name, type: org.type, email: org.email, address: org.address, phone: org.phone, coords: org.coords, status: org.status, adminName: org.adminName });
+    setShowOrgModal(true);
+  };
+
+  const handleSaveOrg = async () => {
+    const safeEmail = orgForm.email.trim();
+    if (!orgForm.name || !safeEmail || !orgForm.adminName) {
+      toast.error('Mohon lengkapi nama, email, dan nama admin');
+      return;
+    }
+    
+    // Validasi format email dasar
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(safeEmail)) {
+      toast.error('Format email tidak valid');
+      return;
+    }
+
+    // Simpan akun ke MySQL API
+    try {
+      if (editingOrg) {
+        // Update user di backend (nama & role) beserta koordinat
+        await apiFetch(`/users/${editingOrg.id}`, {
+          method: 'PUT',
+          body: JSON.stringify({ 
+            name: orgForm.adminName, 
+            role: orgForm.type,
+            address: orgForm.address,
+            phone: orgForm.phone,
+            latitude: orgForm.coords[0],
+            longitude: orgForm.coords[1]
+          })
+        }).catch(() => null);
+        toast.info('Data akun berhasil diperbarui.');
+      } else {
+        await api.users.create({
+          name: orgForm.adminName,
+          email: safeEmail,
+          password: newPassword || 'password123',
+          role: orgForm.type,
+          org: orgForm.name,
+          address: orgForm.address,
+          phone: orgForm.phone,
+          latitude: orgForm.coords[0],
+          longitude: orgForm.coords[1]
+        });
+        toast.success(`Akun ${orgForm.type.toUpperCase()} "${orgForm.name}" berhasil dibuat!`);
+      }
+    } catch (e: any) {
+      toast.warning('Akun tersimpan lokal (backend error): ' + e.message);
+    }
+
+    if (editingOrg) {
+      setOrgs(prev => prev.map(o => o.id === editingOrg.id ? { ...o, ...orgForm } : o));
+    } else {
+      const newOrg: OrgAccount = {
+        id: `org_${Date.now()}`,
+        ...orgForm,
+        status: 'active',
+        createdAt: new Date().toISOString(),
+      };
+      setOrgs(prev => [...prev, newOrg]);
+    }
+    setShowOrgModal(false);
+  };
+
+  const handleToggleOrgStatus = (id: string) => {
+    setOrgs(prev => prev.map(o => {
+      if (o.id !== id) return o;
+      const next = o.status === 'active' ? 'inactive' : 'active';
+      toast.success(`${o.name} ${next === 'active' ? 'diaktifkan' : 'dinonaktifkan'}`);
+      return { ...o, status: next };
+    }));
+  };
+
+  const handleDeleteOrg = async (id: string, name: string) => {
+    // Hapus akun dari MySQL API
+    try {
+      await api.users.delete(id);
+    } catch (e) { console.warn('Gagal hapus dari API:', e); }
+    setOrgs(prev => prev.filter(o => o.id !== id));
+    toast.success(`Akun ${name} dihapus dari sistem`);
+  };
+
+  const handleMarkerDragEnd = async (orgId: string, newCoords: [number, number]) => {
+    // Save new coordinates to backend API
+    try {
+      await apiFetch(`/users/${orgId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ latitude: newCoords[0], longitude: newCoords[1] })
+      });
+      setOrgs(prev => prev.map(o => {
+        if (o.id === orgId) {
+          toast.success(`Lokasi ${o.name} berhasil disimpan`);
+          return { ...o, coords: newCoords };
+        }
+        return o;
+      }));
+    } catch (e: any) {
+      toast.error('Gagal menyimpan lokasi baru ke server: ' + e.message);
+    }
+  };
+
+  // ─── Tab Navigation ──────────────────────────────────────────────────────────
+  const tabs: { id: ActiveTab; label: string; icon: React.ElementType; color: string }[] = [
+    { id: 'overview', label: 'Overview', icon: Activity, color: '#1A1A2E' },
+    { id: 'pmi', label: 'Kelola PMI & Lokasi', icon: HeartPulse, color: '#C0392B' },
+    { id: 'map', label: 'Peta Lokasi Terintegrasi', icon: Map, color: '#8E44AD' },
+  ];
+
+  // ─── Stat Cards ──────────────────────────────────────────────────────────────
+  const statCards = [
+    { label: 'Total Unit PMI', value: pmiList.length, active: pmiList.filter(p => p.status === 'active').length, icon: HeartPulse, color: '#C0392B', bg: '#FDEDEC' },
+    { label: 'Akun Aktif', value: activeOrgs, active: activeOrgs, icon: UserCheck, color: '#27AE60', bg: '#EAFAF1' },
+    { label: 'Total Unit Lokasi', value: orgs.length, active: orgs.length, icon: MapPin, color: '#8E44AD', bg: '#F4EFFE' },
+  ];
+
+  // ─── Org Table Row ───────────────────────────────────────────────────────────
+  const OrgRow = ({ org }: { org: OrgAccount }) => (
+    <div className="border border-border rounded-xl p-4 bg-white hover:shadow-sm transition-all">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="flex items-start gap-3 flex-1 min-w-0">
+          <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-white text-xs font-bold flex-shrink-0`}
+            style={{ background: org.type === 'pmi' ? '#C0392B' : '#2980B9' }}>
+            {org.type === 'pmi' ? 'PMI' : 'RS'}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="font-bold text-[#1A1A2E] text-sm">{org.name}</h3>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${org.status === 'active' ? 'bg-[#EAFAF1] text-[#27AE60]' : 'bg-[#F4F4F8] text-[#9B9BB5]'}`}>
+                {org.status === 'active' ? '✓ Aktif' : '✗ Nonaktif'}
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-0.5 mt-1">
+              <p className="text-xs text-[#4A4A6A] flex items-center gap-1"><Mail className="w-3 h-3 text-[#9B9BB5]" /> {org.email}</p>
+              <p className="text-xs text-[#4A4A6A] flex items-center gap-1"><Phone className="w-3 h-3 text-[#9B9BB5]" /> {org.phone}</p>
+              <p className="text-xs text-[#4A4A6A] flex items-center gap-1 sm:col-span-2"><MapPin className="w-3 h-3 text-[#9B9BB5] flex-shrink-0" /> {org.address}</p>
+              <p className="text-xs text-[#4A4A6A] flex items-center gap-1"><Users className="w-3 h-3 text-[#9B9BB5]" /> Admin: {org.adminName}</p>
+              <p className="text-xs text-[#9B9BB5] flex items-center gap-2"><Map className="w-3 h-3 text-[#9B9BB5]" /> Koordinat: <span className="font-mono text-[#1A1A2E] bg-[#F4F4F8] px-1.5 py-0.5 rounded text-[10px]">{org.coords[0].toFixed(5)}, {org.coords[1].toFixed(5)}</span></p>
+            </div>
+          </div>
+        </div>
+        <div className="flex gap-1.5 flex-shrink-0">
+          <button onClick={() => handleToggleOrgStatus(org.id)}
+            className={`p-2 rounded-lg transition-colors ${org.status === 'active' ? 'bg-[#EAFAF1] hover:bg-[#D5F5E3]' : 'bg-[#F4F4F8] hover:bg-[#E8E8F0]'}`}
+            title={org.status === 'active' ? 'Nonaktifkan' : 'Aktifkan'}>
+            {org.status === 'active' ? <ToggleRight className="w-4 h-4 text-[#27AE60]" /> : <ToggleLeft className="w-4 h-4 text-[#9B9BB5]" />}
+          </button>
+          <button onClick={() => openEditOrg(org)}
+            className="p-2 rounded-lg bg-[#EAF7FB] hover:bg-[#D6EEF8] transition-colors" title="Edit Data & Lokasi Peta">
+            <Edit2 className="w-4 h-4 text-[#2980B9]" />
+          </button>
+          <button onClick={() => handleDeleteOrg(org.id, org.name)}
+            className="p-2 rounded-lg bg-[#FDEDEC] hover:bg-[#FADBD8] transition-colors" title="Hapus">
+            <Trash2 className="w-4 h-4 text-[#C0392B]" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-[#F7F7FB]">
+      {/* Header */}
+      <div className="bg-white border-b border-border px-4 py-5 sticky top-0 z-30 shadow-sm">
+        <div className="max-w-6xl mx-auto flex items-center justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-[#1A1A2E] flex items-center justify-center">
+              <Shield className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <h1 className="font-bold text-[#1A1A2E] text-lg leading-tight" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+                Super Admin Dashboard
+              </h1>
+              <p className="text-xs text-[#9B9BB5]">TemanDonor! — Pengaturan Instansi & Lokasi Peta</p>
+            </div>
+          </div>
+          <div className="relative w-64">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9B9BB5]" />
+            <input
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="Cari nama atau email..."
+              className="w-full pl-9 pr-4 py-2 rounded-xl border border-border text-sm bg-[#F7F7FB] focus:outline-none focus:ring-2 focus:ring-[#1A1A2E]/20"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
+        {/* Tab Nav */}
+        <div className="bg-white rounded-2xl border border-border p-1.5 flex gap-1 shadow-sm overflow-x-auto">
+          {tabs.map(tab => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
+              <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+                className={`flex-1 min-w-max py-2.5 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                  isActive ? 'text-white shadow-md' : 'text-[#4A4A6A] hover:bg-[#F4F4F8]'
+                }`}
+                style={isActive ? { background: tab.color } : {}}>
+                <Icon className="w-4 h-4" /> {tab.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* ── OVERVIEW TAB ─────────────────────────────────────── */}
+        {activeTab === 'overview' && (
+          <div className="space-y-6">
+            {/* Stat Cards */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              {statCards.map((card, i) => {
+                const Icon = card.icon;
+                return (
+                  <div key={i} className="bg-white rounded-2xl border border-border p-5 shadow-sm hover:shadow-md transition-shadow">
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: card.bg }}>
+                        <Icon className="w-5 h-5" style={{ color: card.color }} />
+                      </div>
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#EAFAF1] text-[#27AE60]">
+                        {card.active} aktif
+                      </span>
+                    </div>
+                    <p className="text-3xl font-extrabold text-[#1A1A2E]">{card.value}</p>
+                    <p className="text-xs text-[#9B9BB5] mt-0.5">{card.label}</p>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Quick Lists - PMI only */}
+            <div className="space-y-6">
+              {/* PMI Summary */}
+              <div className="bg-white rounded-2xl border border-border p-5 shadow-sm">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="font-bold text-[#1A1A2E] flex items-center gap-2 text-sm">
+                    <HeartPulse className="w-4 h-4 text-[#C0392B]" /> Unit PMI Terdaftar & Koordinat
+                  </h2>
+                  <button onClick={() => { setActiveTab('pmi'); openAddOrg('pmi'); }}
+                    className="text-xs font-bold text-[#C0392B] hover:underline flex items-center gap-1">
+                    <Plus className="w-3.5 h-3.5" /> Tambah PMI
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  {pmiList.map(org => (
+                    <div key={org.id} className="flex items-center justify-between text-sm py-2 border-b border-border last:border-0">
+                      <div className="flex items-center gap-2">
+                        <div className="w-7 h-7 rounded-lg bg-[#FDEDEC] flex items-center justify-center text-[10px] font-bold text-[#C0392B]">PMI</div>
+                        <div>
+                          <p className="font-semibold text-[#1A1A2E] text-xs">{org.name}</p>
+                          <p className="text-[9px] text-[#9B9BB5] font-mono">{org.coords[0].toFixed(4)}, {org.coords[1].toFixed(4)}</p>
+                        </div>
+                      </div>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${org.status === 'active' ? 'bg-[#EAFAF1] text-[#27AE60]' : 'bg-[#F4F4F8] text-[#9B9BB5]'}`}>
+                        {org.status === 'active' ? 'Aktif' : 'Nonaktif'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── PMI TAB ───────────────────────────────────────────── */}
+        {activeTab === 'pmi' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="font-bold text-[#1A1A2E] text-lg flex items-center gap-2">
+                <HeartPulse className="w-5 h-5 text-[#C0392B]" /> Kelola Unit PMI & Lokasi
+              </h2>
+              <button onClick={() => openAddOrg('pmi')}
+                className="bg-[#C0392B] text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-[#922B21] transition-colors flex items-center gap-2 shadow-sm">
+                <Plus className="w-4 h-4" /> Tambah Unit PMI baru
+              </button>
+            </div>
+            {filteredPMI.length === 0 ? (
+              <div className="bg-white rounded-2xl border border-border p-12 text-center">
+                <HeartPulse className="w-10 h-10 text-[#9B9BB5] mx-auto mb-3" />
+                <p className="text-sm font-semibold text-[#1A1A2E]">Tidak Ada Unit PMI Ditemukan</p>
+              </div>
+            ) : (
+              <div className="space-y-3">{filteredPMI.map(org => <OrgRow key={org.id} org={org} />)}</div>
+            )}
+          </div>
+        )}
+
+        {/* ── MAP TAB ───────────────────────────────────────────── */}
+        {activeTab === 'map' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="font-bold text-[#1A1A2E] text-lg flex items-center gap-2">
+                <Map className="w-5 h-5 text-[#8E44AD]" /> Peta Lokasi Seluruh Unit PMI Terintegrasi
+              </h2>
+              <div className="flex gap-2 text-xs">
+                <span className="flex items-center gap-1.5 bg-[#FDEDEC] text-[#C0392B] px-3 py-1.5 rounded-full font-semibold">
+                  <div className="w-2 h-2 rounded-full bg-[#C0392B]" /> Unit PMI
+                </span>
+              </div>
+            </div>
+            <div className="bg-white rounded-2xl border border-border p-4 shadow-sm">
+              <AdminMap orgs={orgs} onMarkerDragEnd={handleMarkerDragEnd} />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── ORG MODAL WITH INTEGRATED LOCATION PICKER MAP ─────────────────────── */}
+      {showOrgModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4 bg-black/40 backdrop-blur-sm shadow-xl" onClick={() => setShowOrgModal(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[95vh] overflow-y-auto p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4 border-b pb-3 border-border">
+              <h2 className="font-bold text-[#1A1A2E] text-base flex items-center gap-2"
+                style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+                <HeartPulse className="w-5 h-5 text-[#C0392B]" />
+                {editingOrg ? 'Edit Akun & Lokasi' : 'Tambah Instansi Baru'}
+              </h2>
+              <button onClick={() => setShowOrgModal(false)} className="p-1.5 rounded-lg hover:bg-[#F4F4F8]">
+                <X className="w-4 h-4 text-[#4A4A6A]" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {[
+                { label: 'Nama Instansi *', key: 'name', placeholder: 'PMI D', type: 'text' },
+                { label: 'Email Admin *', key: 'email', placeholder: 'admin@pmid.org', type: 'email' },
+                { label: 'Nama Admin *', key: 'adminName', placeholder: 'Admin PMI D', type: 'text' },
+                { label: 'Nomor Telepon', key: 'phone', placeholder: '(031) 000-0000', type: 'tel' },
+                { label: 'Alamat Lengkap', key: 'address', placeholder: 'Jl. Nama Jalan No. 1, Surabaya', type: 'text' },
+              ].map(field => (
+                <div key={field.key}>
+                  <label className="text-xs font-semibold text-[#4A4A6A] block mb-1">{field.label}</label>
+                  <input
+                    type={field.type}
+                    value={(orgForm as any)[field.key]}
+                    onChange={e => setOrgForm(prev => ({ ...prev, [field.key]: e.target.value }))}
+                    placeholder={field.placeholder}
+                    className="w-full px-3 py-2.5 rounded-xl border border-border text-sm focus:outline-none focus:ring-2 focus:ring-[#1A1A2E]/20 bg-[#F7F7FB]"
+                  />
+                </div>
+              ))}
+
+              {/* Password field for new accounts */}
+              {!editingOrg && (
+                <div>
+                  <label className="text-xs font-semibold text-[#4A4A6A] block mb-1">Password Akun</label>
+                  <div className="relative">
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      placeholder="Masukkan kata sandi (min. 6 karakter)"
+                      className="w-full px-3 py-2.5 rounded-xl border border-border text-sm focus:outline-none focus:ring-2 focus:ring-[#1A1A2E]/20 bg-[#F7F7FB] pr-10"
+                    />
+                    <button type="button" onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2">
+                      {showPassword ? <EyeOff className="w-4 h-4 text-[#9B9BB5]" /> : <Eye className="w-4 h-4 text-[#9B9BB5]" />}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Integrated Map Coordinate Picker */}
+              <div>
+                <label className="text-xs font-semibold text-[#4A4A6A] block mb-1.5">Tentukan Lokasi Peta (Lat, Lng) *</label>
+                
+                {/* Embedded Mini-Map Picker */}
+                <div className="mb-2 rounded-xl overflow-hidden shadow-inner border border-border">
+                  <AdminMap 
+                    orgs={[]} 
+                    centerCoords={orgForm.coords}
+                    tempCoords={orgForm.coords}
+                    tempType={orgModalType}
+                    onPickCoords={(coords) => {
+                      setOrgForm(prev => ({ ...prev, coords }));
+                      toast.success(`Titik koordinat berhasil di-update: ${coords[0].toFixed(5)}, ${coords[1].toFixed(5)}`);
+                    }}
+                  />
+                </div>
+
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <span className="text-[10px] text-[#9B9BB5] block mb-0.5">Latitude (Lintang)</span>
+                    <input type="number" step="0.000001"
+                      value={orgForm.coords[0]}
+                      onChange={e => setOrgForm(prev => ({ ...prev, coords: [parseFloat(e.target.value) || 0, prev.coords[1]] }))}
+                      className="w-full px-3 py-2 rounded-xl border border-border text-xs focus:outline-none focus:ring-2 focus:ring-[#1A1A2E]/20 bg-[#F7F7FB]"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <span className="text-[10px] text-[#9B9BB5] block mb-0.5">Longitude (Bujur)</span>
+                    <input type="number" step="0.000001"
+                      value={orgForm.coords[1]}
+                      onChange={e => setOrgForm(prev => ({ ...prev, coords: [prev.coords[0], parseFloat(e.target.value) || 0] }))}
+                      className="w-full px-3 py-2 rounded-xl border border-border text-xs focus:outline-none focus:ring-2 focus:ring-[#1A1A2E]/20 bg-[#F7F7FB]"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Status */}
+              <div>
+                <label className="text-xs font-semibold text-[#4A4A6A] block mb-1">Status Akun</label>
+                <div className="flex gap-2">
+                  {(['active', 'inactive'] as OrgStatus[]).map(s => (
+                    <button key={s} type="button"
+                      onClick={() => setOrgForm(prev => ({ ...prev, status: s }))}
+                      className={`flex-1 py-2 rounded-xl text-xs font-bold border transition-all ${
+                        orgForm.status === s
+                          ? s === 'active' ? 'bg-[#EAFAF1] text-[#27AE60] border-[#27AE60]' : 'bg-[#F4F4F8] text-[#9B9BB5] border-[#9B9BB5]'
+                          : 'border-border text-[#9B9BB5] hover:bg-[#F4F4F8]'
+                      }`}>
+                      {s === 'active' ? '✓ Aktif' : '✗ Nonaktif'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3 mt-6 border-t pt-4 border-border">
+              <button onClick={() => setShowOrgModal(false)}
+                className="flex-1 py-2.5 rounded-xl border border-border text-sm font-semibold text-[#4A4A6A] hover:bg-[#F4F4F8] transition-colors">
+                Batal
+              </button>
+              <button onClick={handleSaveOrg}
+                className="flex-1 py-2.5 rounded-xl text-white text-sm font-bold hover:opacity-90 transition-all flex items-center justify-center gap-2 shadow-sm"
+                style={{ background: orgModalType === 'pmi' ? '#C0392B' : '#2980B9' }}>
+                <Save className="w-4 h-4" /> {editingOrg ? 'Simpan Lokasi & Data' : 'Tambah Instansi'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

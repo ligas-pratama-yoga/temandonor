@@ -1,0 +1,2981 @@
+import { useState, useEffect, lazy, Suspense } from 'react';
+import { useSearchParams, useLocation } from 'react-router';
+import {
+  Droplets, Users, Bell, Calendar, CheckCircle, Clock, AlertTriangle, Heart,
+  MapPin, Phone, Plus, Search, Filter, Send, X, ChevronDown, TrendingUp,
+  Package, Truck, BarChart2, Megaphone, Trash2, Save, RefreshCw, Loader2
+} from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
+import { Progress } from './ui/progress';
+import { Badge } from './ui/badge';
+import { format, addDays, isPast, isToday, differenceInDays } from 'date-fns';
+import { toast } from 'sonner';
+import { api, apiFetch } from '../utils/api';
+import { validateName, validateEmail, validatePassword, validatePhone, validateVehiclePlate, validateFutureDate, validatePositiveInt } from '../utils/validate';
+import { useAutoSave } from '../context/AutoSaveContext';
+import { useAuth } from '../context/AuthContext';
+import StockActionModal, { StockActionType } from './StockActionModal';
+import { motion, AnimatePresence } from 'motion/react';
+import { AnimatedCounter, AnimatedProgressBar } from './ui/AnimatedCounter';
+import { StockDistributionChart, StockTrendsChart, BloodDonutChart } from './dashboard/AnimatedCharts';
+import DonorBroadcastManager from './DonorBroadcastManager';
+
+const BarcodeLabel = lazy(() => import('./BarcodeLabel').then(module => ({ default: module.BarcodeLabel })));
+import { ArrowDownCircle, ArrowUpCircle, Printer } from 'lucide-react';
+
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+type Priority = 'darurat' | 'mendesak' | 'normal';
+type RequestStatus = 'pending' | 'diproses' | 'dikirim' | 'tiba' | 'selesai' | 'ditolak';
+type StockStatus = 'good' | 'low' | 'critical';
+
+interface BloodRequest {
+  id: string;
+  hospital: string;
+  bloodType: string;
+  qty: number;
+  priority: Priority;
+  status: RequestStatus;
+  time: string;
+  address: string;
+  contact: string;
+  pmi?: string;
+}
+
+interface StockBatch {
+  id: string;           // bag_code
+  codes?: string[];
+  qty: number;
+  entryDate: string;
+  expDate: string;
+  sourceName?: string;  // dari mana darah berasal
+  addedByName?: string; // siapa yang menginput
+  direction?: 'in' | 'out';
+  reason?: string;
+}
+
+interface BloodStock {
+  type: string;
+  stock: number;
+  target: number;
+  status: StockStatus;
+  expiringSoon: number;
+  predictedShortfall: boolean;
+  lastUpdated?: string;
+  batches?: StockBatch[];
+}
+
+interface Donor {
+  id: string;
+  name: string;
+  bloodType: string;
+  lastDonor: string;
+  phone: string;
+  eligible: boolean;
+  totalDonations: number;
+}
+
+interface DonorEvent {
+  id: string;
+  name: string;
+  date: string;
+  location: string;
+  target: number;
+  registered: number;
+}
+
+// ─── Mock Data ────────────────────────────────────────────────────────────────
+
+const bloodRequests: BloodRequest[] = [];
+
+const bloodStocks: BloodStock[] = [];
+
+
+const donorEvents: DonorEvent[] = [];
+
+// ─── Config ───────────────────────────────────────────────────────────────────
+
+const priorityConfig: Record<Priority, { label: string; bg: string; text: string; dot: string }> = {
+  darurat: { label: 'Darurat', bg: '#FDEDEC', text: '#C0392B', dot: '#E74C3C' },
+  mendesak: { label: 'Mendesak', bg: '#FEF9E7', text: '#E67E22', dot: '#F39C12' },
+  normal: { label: 'Normal', bg: '#EAF7FB', text: '#2980B9', dot: '#3498DB' },
+};
+
+const statusConfig: Record<RequestStatus, { label: string; bg: string; text: string }> = {
+  pending: { label: 'Menunggu', bg: '#FEF9E7', text: '#E67E22' },
+  diproses: { label: 'Diproses', bg: '#EAF7FB', text: '#2980B9' },
+  dikirim: { label: 'Dikirim', bg: '#E8DAEF', text: '#8E44AD' },
+  tiba: { label: 'Tiba di Tujuan', bg: '#E8F8F5', text: '#117A65' },
+  selesai: { label: 'Selesai', bg: '#EAFAF1', text: '#1E8449' },
+  ditolak: { label: 'Ditolak', bg: '#FDEDEC', text: '#C0392B' },
+};
+
+const stockStatusConfig: Record<StockStatus, { label: string; bg: string; text: string; bar: string }> = {
+  good: { label: 'Baik', bg: '#EAFAF1', text: '#1E8449', bar: '#27AE60' },
+  low: { label: 'Rendah', bg: '#FEF9E7', text: '#E67E22', bar: '#E67E22' },
+  critical: { label: 'Kritis', bg: '#FDEDEC', text: '#C0392B', bar: '#E74C3C' },
+};
+
+const btColor: Record<string, string> = {
+  'A+': '#E74C3C', 'A-': '#C0392B', 'B+': '#2980B9', 'B-': '#1A5276',
+  'AB+': '#8E44AD', 'AB-': '#6C3483', 'O+': '#27AE60', 'O-': '#1E8449',
+};
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function RequestCard({ req, onApprove, onReject }: { req: BloodRequest; onApprove: (id: string) => void; onReject: (id: string) => void }) {
+  const p = priorityConfig[req.priority] || priorityConfig.normal;
+  const s = statusConfig[req.status] || statusConfig.pending;
+  return (
+    <div className="bg-white border border-border rounded-2xl p-5 hover:shadow-md transition-shadow">
+      <div className="flex items-start justify-between mb-3">
+        <div className="flex-1">
+          <div className="flex items-center gap-2 flex-wrap mb-1">
+            <span className="font-bold text-[#1A1A2E] text-sm" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>{req.hospital}</span>
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1" style={{ background: p.bg, color: p.text }}>
+              <span className="w-1.5 h-1.5 rounded-full" style={{ background: p.dot }} />
+              {p.label}
+            </span>
+          </div>
+          <div className="flex items-center gap-3 text-xs text-[#9B9BB5]">
+            <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{req.address}</span>
+            <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{req.time}</span>
+          </div>
+        </div>
+        <div className="flex flex-col items-end gap-1.5">
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white text-xs font-bold" style={{ background: btColor[req.bloodType] || '#C0392B' }}>
+            {req.bloodType}
+          </div>
+          <span className="text-xs font-bold text-[#1A1A2E]">{req.qty} kantong</span>
+        </div>
+      </div>
+      <div className="flex items-center justify-between pt-3 border-t border-border">
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ background: s.bg, color: s.text }}>{s.label}</span>
+          <span className="text-xs text-[#9B9BB5] flex items-center gap-1"><Phone className="w-3 h-3" />{req.contact}</span>
+        </div>
+        {req.status === 'pending' && (
+          <div className="flex gap-2">
+            <button onClick={() => onReject(req.id)} className="px-3 py-1.5 rounded-lg border border-border text-xs text-[#9B9BB5] hover:border-red-300 hover:text-[#C0392B] transition-colors flex items-center gap-1">
+              <X className="w-3 h-3" /> Tolak
+            </button>
+            <button onClick={() => onApprove(req.id)} className="px-3 py-1.5 rounded-lg bg-[#C0392B] text-white text-xs font-semibold hover:bg-[#922B21] transition-colors flex items-center gap-1">
+              <CheckCircle className="w-3 h-3" /> Setujui
+            </button>
+          </div>
+        )}
+        {req.status === 'diproses' && (
+          <span className="text-xs text-[#2980B9] flex items-center gap-1 font-medium"><RefreshCw className="w-3 h-3 animate-spin" /> Disiapkan / Diproses</span>
+        )}
+        {req.status === 'dikirim' && (
+          <span className="text-xs text-[#8E44AD] flex items-center gap-1 font-medium"><Truck className="w-3 h-3 animate-bounce" /> Sedang dikirim</span>
+        )}
+        {req.status === 'tiba' && (
+          <span className="text-xs text-[#117A65] flex items-center gap-1 font-medium"><MapPin className="w-3 h-3" /> Tiba di Tujuan (Menunggu Konfirmasi)</span>
+        )}
+        {req.status === 'selesai' && (
+          <span className="text-xs text-[#27AE60] flex items-center gap-1 font-medium"><CheckCircle className="w-3 h-3" /> Diterima di Tujuan</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Date & Expiration Helpers ───────────────────────────────────────────────
+
+const parseBatchDate = (dateStr: string): Date => {
+  const map: Record<string, string> = {
+    mei: 'may',
+    agt: 'aug',
+    okt: 'oct',
+    des: 'dec'
+  };
+  let normalized = dateStr.toLowerCase();
+  Object.keys(map).forEach(key => {
+    normalized = normalized.replace(key, map[key]);
+  });
+  return new Date(normalized);
+};
+
+const isExpired = (dateStr: string): boolean => {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const expDate = parseBatchDate(dateStr);
+    return expDate < today;
+  } catch (e) {
+    return false;
+  }
+};
+
+const isExpiringSoon = (dateStr: string): boolean => {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const expDate = parseBatchDate(dateStr);
+    const diffTime = expDate.getTime() - today.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    return diffDays >= 0 && diffDays <= 7;
+  } catch (e) {
+    return false;
+  }
+};
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+
+export default function PMIDashboard() {
+  const { user } = useAuth();
+  const { registerAutoSave } = useAutoSave();
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
+  const tabParam = searchParams.get('tab');
+  const [activeTab, setActiveTab] = useState<'overview'|'requests'|'stock'|'drivers'|'ledger'|'broadcast'|'events'|'donors'|'public-requests'>('overview');
+  const [ledger, setLedger] = useState<any[]>([]);
+  const [isLoadingLedger, setIsLoadingLedger] = useState(false);
+  const [ledgerFilter, setLedgerFilter] = useState<'all' | 'in' | 'out'>('all');
+  const [requestFilter, setRequestFilter] = useState<'semua' | Priority>('semua');
+
+  // State untuk modal stok
+  const [stockModalConfig, setStockModalConfig] = useState<{isOpen: boolean; actionType: StockActionType; bloodType: string; currentStock: number}>({
+    isOpen: false, actionType: 'in', bloodType: 'A+', currentStock: 0
+  });
+
+  const [showPrintModal, setShowPrintModal] = useState(false);
+  const [printBagInfo, setPrintBagInfo] = useState<{bagCodes: string[], bloodType: string, expDate: string, sourceName?: string} | null>(null);
+
+  const [isDirty, setIsDirty] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    const currentTab = new URLSearchParams(location.search).get('tab') || tabParam;
+    if (currentTab) {
+      setActiveTab(currentTab as any);
+      setTimeout(() => {
+        const el = document.getElementById(`${currentTab}-section`) || document.getElementById('requests-section');
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 150);
+    }
+  }, [location.search, tabParam]);
+
+  const [requests, setRequests] = useState<BloodRequest[]>(bloodRequests);
+  const [stocks, setStocks] = useState<BloodStock[]>(bloodStocks);
+  const [publicRequests, setPublicRequests] = useState<any[]>([]);
+
+  const [donorList, setDonorList] = useState<Donor[]>([]);
+  
+  const [drivers, setDrivers] = useState<any[]>([]);
+
+  const [newDriverName, setNewDriverName] = useState('');
+  const [newDriverEmail, setNewDriverEmail] = useState('');
+  const [newDriverPhone, setNewDriverPhone] = useState('');
+  const [newDriverVehicle, setNewDriverVehicle] = useState('');
+  const [newDriverPassword, setNewDriverPassword] = useState('');
+  const [showAddDriverModal, setShowAddDriverModal] = useState(false);
+  const [isSubmittingDriver, setIsSubmittingDriver] = useState(false);
+  const [driverSearchQuery, setDriverSearchQuery] = useState('');
+  const [driverErrors, setDriverErrors] = useState<Record<string,string>>({});
+  const [approvingRequestId, setApprovingRequestId] = useState<string | null>(null);
+  const [approvingPublicRequestId, setApprovingPublicRequestId] = useState<string | null>(null);
+  const [chosenDriverId, setChosenDriverId] = useState<string>('');
+
+  // States for Bag Assignment Traceability
+  const [assigningBagsRequestId, setAssigningBagsRequestId] = useState<string | null>(null);
+  const [selectedBagCodes, setSelectedBagCodes] = useState<string[]>([]);
+
+  // States untuk Event Donor
+  const [eventsList, setEventsList] = useState<DonorEvent[]>(donorEvents);
+  const [showAddEventModal, setShowAddEventModal] = useState(false);
+  const [eventErrors, setEventErrors] = useState<Record<string, string>>({});
+  const [newEventName, setNewEventName] = useState('');
+  const [newEventDate, setNewEventDate] = useState('');
+  const [newEventTime, setNewEventTime] = useState('');
+  const [newEventLocation, setNewEventLocation] = useState('');
+  const [newEventCapacity, setNewEventCapacity] = useState<number>(50);
+  const [newEventDescription, setNewEventDescription] = useState('');
+
+  // Load data dari MySQL API
+  useEffect(() => {
+    if (!user) return;
+    async function loadPMIData() {
+      try {
+        const [reqData, stockData, driverData, publicReqData, bagsData, donorData, ledgerData, eventsData] = await Promise.all([
+          api.orders.getRequests([]).catch(() => []),
+          api.stock.getPMIStock([]).catch(() => []),
+          api.users.getAll('driver', []).catch(() => []),
+          api.orders.getPublicRequests([]).catch(() => []),
+          api.stock.getBags({ status: 'available' }).catch(() => []),
+          api.users.getAll('donor', []).catch(() => []),
+          api.stock.getLedger().catch(() => []),
+          api.events.getMine([]).catch(() => [])
+        ]);
+        if (reqData?.length) {
+          setRequests(reqData.map((r: any) => ({
+            id: r.id, hospital: r.hospital, bloodType: r.blood_type,
+            qty: r.qty, priority: r.priority, status: r.status,
+            pmi: r.pmi || null,
+            pmiId: r.pmi_id || null,
+            time: r.created_at ? new Date(r.created_at).toLocaleString('id-ID') : 'Baru saja', address: r.address || '-',
+            contact: r.contact || '-'
+          })));
+        }
+        if (publicReqData && Array.isArray(publicReqData)) {
+          setPublicRequests(publicReqData);
+        }
+
+        // Kelompokkan kantong by blood_type → batches (group by exp_date + source_name)
+        const bagsByType: Record<string, StockBatch[]> = {};
+        if (Array.isArray(bagsData)) {
+          bagsData
+            .filter((b: any) => b.owner_id === user?.id)
+            .forEach((b: any) => {
+              if (!bagsByType[b.blood_type]) bagsByType[b.blood_type] = [];
+              const batchKey = `${b.exp_date}||${b.source_name || ''}`;
+              const existing = bagsByType[b.blood_type].find(
+                (bt: StockBatch) => `${bt.expDate}||${bt.sourceName || ''}` === batchKey
+              );
+              if (existing) {
+                existing.qty += 1;
+                if (existing.codes && b.bag_code) existing.codes.push(b.bag_code);
+              } else {
+                bagsByType[b.blood_type].push({
+                  id: b.bag_code,
+                  codes: b.bag_code ? [b.bag_code] : [],
+                  qty: 1,
+                  entryDate: b.collected_at ? b.collected_at.split('T')[0] : '',
+                  expDate: b.exp_date ? b.exp_date.split('T')[0] : '',
+                  sourceName: b.source_name,
+                  addedByName: b.added_by_name,
+                  direction: 'in'
+                });
+              }
+            });
+        }
+
+        const baseTypes = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
+        const myStocks = stockData?.filter((s: any) => s.pmi_id === user?.id) || [];
+        const mergedStocks = baseTypes.map(type => {
+          const found = myStocks.find((s: any) => s.blood_type === type);
+          const batches = bagsByType[type] || [];
+          if (found) {
+            return {
+              type: found.blood_type, stock: found.stock, target: found.target || 50,
+              status: (found.status as StockStatus) || 'critical', expiringSoon: found.expiring_soon || 0,
+              predictedShortfall: found.stock < (found.target || 50) * 0.3,
+              lastUpdated: found.updated_at ? new Date(found.updated_at).toLocaleString('id-ID') : undefined,
+              batches
+            };
+          }
+          return { type, stock: 0, target: 50, status: 'critical' as StockStatus, expiringSoon: 0, predictedShortfall: true, batches };
+        });
+        setStocks(mergedStocks);
+        // Selalu update state driver (termasuk array kosong)
+        setDrivers(Array.isArray(driverData) ? driverData.map((d: any) => ({
+          id: String(d.id), name: d.name, email: d.email,
+          phone: d.phone || '-',
+          vehicleNo: d.address || '-',  // vehicle_no disimpan di kolom address
+          org: d.org || user?.org || 'PMI'
+        })) : []);
+        
+        if (donorData?.length) {
+          setDonorList(donorData.map((d: any) => ({
+            id: String(d.id),
+            name: d.name,
+            bloodType: d.blood_type || 'Belum Tahu',
+            lastDonor: d.last_donor_date || new Date(Date.now() - 100 * 24 * 60 * 60 * 1000).toISOString(),
+            phone: d.phone || '081234567890',
+            // Default rule: eligible if last donor > 60 days
+            eligible: d.last_donor_date ? (Date.now() - new Date(d.last_donor_date).getTime() > 60 * 24 * 60 * 60 * 1000) : true,
+            totalDonations: d.total_donations || 0
+          })));
+        }
+        if (ledgerData && Array.isArray(ledgerData)) {
+          setLedger(ledgerData);
+        }
+        if (eventsData && Array.isArray(eventsData)) {
+          setEventsList(eventsData.map((e: any) => ({
+            id: String(e.id),
+            name: e.name,
+            date: e.date ? (typeof e.date === 'string' ? e.date.split('T')[0] : format(new Date(e.date), 'yyyy-MM-dd')) : '-',
+            location: e.location || e.address || '-',
+            target: e.capacity || 50,
+            registered: e.registered_count || e.bookings_count || 0
+          })));
+        }
+      } catch (err) {
+        console.warn('Gagal memuat data PMI dari API, menggunakan data lokal.');
+      }
+    }
+    loadPMIData();
+  }, [user]);
+
+  // Realtime refresh tidak digunakan (polling opsional jika diperlukan)
+  useEffect(() => { return; }, []);
+
+  // ─── Handler: Tab & Fitur Lainnya ──────────────────────────────────────────
+
+  const [searchDonor, setSearchDonor] = useState('');
+  const [filterBlood, setFilterBlood] = useState('Semua');
+  const [showBroadcastModal, setShowBroadcastModal] = useState(false);
+  const [broadcastType, setBroadcastType] = useState('O-');
+  const [broadcastMsg, setBroadcastMsg] = useState('');
+  const [broadcastSent, setBroadcastSent] = useState(false);
+  const [isBroadcasting, setIsBroadcasting] = useState(false);
+  // Field BARU untuk broadcast — SEMUA OPSIONAL, default aman (TIDAK MENGUBAH ALUR USER)
+  const [broadcastUrgency, setBroadcastUrgency] = useState<'' | 'routine' | 'urgent' | 'code-red'>(''); // kosong = pakai default backend
+  const [broadcastRadiusKm, setBroadcastRadiusKm] = useState<number | ''>(''); // '' = tanpa filter radius
+  const [broadcastCodeRedReason, setBroadcastCodeRedReason] = useState('');
+  // Koordinat broadcast: default dari user yang login jika ada, else kosong
+  const [broadcastLat, setBroadcastLat] = useState<number | ''>((user as any)?.latitude || (user as any)?.lat || '');
+  const [broadcastLng, setBroadcastLng] = useState<number | ''>((user as any)?.longitude || (user as any)?.lng || '');
+  const [broadcastUseMyLocation, setBroadcastUseMyLocation] = useState<boolean>(Boolean((user as any)?.latitude || (user as any)?.lat));
+  // Preview donor: estimasi akurat dari backend eligibility query
+  const [previewDonor, setPreviewDonor] = useState<{eligible: number; registered_total: number; filtered_out: number}>({ eligible: 0, registered_total: 0, filtered_out: 0 });
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+
+  // State BARU untuk Tab Riwayat Broadcast + Follow-up donor
+  const [broadcastLogs, setBroadcastLogs] = useState<any[]>([]);
+  const [isLoadingBroadcastLogs, setIsLoadingBroadcastLogs] = useState(false);
+  const [expandedBroadcastLog, setExpandedBroadcastLog] = useState<string | null>(null);
+  const [followupInputMap, setFollowupInputMap] = useState<Record<number|string, {status: string; notes: string}>>({});
+  const [isSubmittingFollowup, setIsSubmittingFollowup] = useState<number|string|null>(null);
+  const [expandedBatches, setExpandedBatches] = useState<Record<string, boolean>>({});
+  const [showAllBatches, setShowAllBatches] = useState<Record<string, boolean>>({});
+
+  const toggleBatches = (bloodType: string) => {
+    setExpandedBatches(prev => ({
+      ...prev,
+      [bloodType]: !prev[bloodType]
+    }));
+  };
+
+  const toggleShowAllBatches = (bloodType: string) => {
+    setShowAllBatches(prev => ({
+      ...prev,
+      [bloodType]: !prev[bloodType]
+    }));
+  };
+
+
+  const myPmiName = user?.org || user?.name || 'PMI Pusat';
+  // Tampilkan hanya:
+  // - Request yang ditujukan ke PMI ini (berdasarkan pmiId atau nama PMI)
+  // Jangan gunakan !r.pmi karena itu akan mem-broadcast request tak terassign ke SEMUA PMI
+  const displayedRequests = requests.filter(r => {
+    if ((r as any).pmiId && user?.id) {
+      return (r as any).pmiId === user.id;
+    }
+    if (r.pmi) {
+      const pmiLower = r.pmi.toLowerCase().trim();
+      const myOrgLower = (user?.org || '').toLowerCase().trim();
+      const myNameLower = (user?.name || '').toLowerCase().trim();
+      return (myOrgLower && pmiLower === myOrgLower) || (myNameLower && pmiLower === myNameLower);
+    }
+    return false; // Jangan tampilkan ke PMI ini jika tidak jelas tujuannya
+  });
+
+  const pendingCount = displayedRequests.filter(r => r.status === 'pending').length;
+  const criticalStocks = stocks.filter(s => s.status === 'critical').length;
+  const expiringSoon = stocks.reduce((sum, s) => sum + s.expiringSoon, 0);
+  const totalDonors = donorList.length;
+  const eligibleDonors = donorList.filter(d => d.eligible).length;
+
+  const handleApprove = (id: string) => {
+    const req = requests.find(r => r.id === id);
+    if (req) {
+      setAssigningBagsRequestId(id);
+      setSelectedBagCodes([]);
+    }
+  };
+
+  const confirmApprovalWithDriver = async () => {
+    if (!approvingRequestId) return;
+    const req = requests.find(r => r.id === approvingRequestId);
+    if (!req) return;
+
+    if (!chosenDriverId) {
+      toast.error('Silakan daftarkan atau pilih driver terlebih dahulu!');
+      return;
+    }
+
+    const selectedDriver = drivers.find(d => d.id === chosenDriverId);
+    if (!selectedDriver) {
+      toast.error('Driver terpilih tidak valid.');
+      return;
+    }
+
+    // 1. Update status permintaan darah & kurangi stok spesifik
+    setRequests(prev => prev.map(r => r.id === approvingRequestId ? { ...r, status: 'diproses' as const } : r));
+    setStocks(prev => prev.map(s => {
+      if (s.type === req.bloodType) {
+        // Hapus kantong spesifik yang dipilih dari batches
+        const newBatches = (s.batches || []).map(batch => {
+          if (batch.codes) {
+            return {
+              ...batch,
+              codes: batch.codes.filter(c => !selectedBagCodes.includes(c)),
+              qty: batch.codes.filter(c => !selectedBagCodes.includes(c)).length
+            };
+          }
+          return batch;
+        }).filter(batch => batch.qty > 0);
+
+        const newStock = Math.max(0, s.stock - req.qty);
+        const pct = Math.round((newStock / s.target) * 100);
+        const newStatus = pct >= 60 ? 'good' : pct >= 30 ? 'low' : 'critical';
+        return { ...s, stock: newStock, batches: newBatches, status: newStatus, lastUpdated: 'Baru saja' };
+      }
+      return s;
+    }));
+
+    // 2. Buat objek pengiriman baru
+    const pmiCoordsMap: Record<string, [number, number]> = {
+      'PMI A': [-7.2657, 112.7445],
+      'PMI B': [-7.2709, 112.7505],
+      'PMI C': [-7.4475, 112.7025],
+    };
+    const destinationCoordsMap: Record<string, [number, number]> = {
+      'Unit A': [-7.2678, 112.7584],
+      'Unit B': [-7.2435, 112.7538],
+      'Unit C': [-7.3117, 112.7364],
+      'Unit D': [-7.2847, 112.7845],
+      'Unit E': [-7.2745, 112.7490],
+      'Unit F': [-7.2890, 112.7378],
+      'Unit G': [-7.3062, 112.7349],
+      'Unit H': [-7.2668, 112.6913],
+    };
+    const fromName = user?.org || 'PMI A';
+    const toName = req.hospital;
+    const fromCoords = pmiCoordsMap[fromName] || [-7.2657, 112.7445];
+    const toCoords = destinationCoordsMap[toName] || [-7.2678, 112.7584];
+    const dLat = toCoords[0] - fromCoords[0];
+    const dLng = toCoords[1] - fromCoords[1];
+    const distanceKm = Math.sqrt(dLat * dLat + dLng * dLng) * 111.12;
+    const travelTimeMin = Math.round(distanceKm * 2.5 + 4);
+    const calculatedDistance = `${distanceKm.toFixed(1)} km`;
+    const calculatedEta = `${travelTimeMin} mnt`;
+
+    const newDelivery = {
+      id: `del_${Date.now()}`,
+      orderId: req.id, // Menggunakan ID asli dari blood_requests
+      driverId: selectedDriver.id,
+      status: 'disiapkan',
+      eta: calculatedEta,
+      distance: calculatedDistance,
+      pct: 0,
+      bagCodes: [...selectedBagCodes], // Mengirim data kantong asli ke driver
+      updatedAt: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+    };
+
+    // Bersihkan state pilihan kantong
+    setSelectedBagCodes([]);
+
+    // Sync ke API MySQL — jalankan semua sekaligus (paralel) agar tidak lambat
+    await Promise.allSettled([
+      apiFetch(`/orders/requests/${approvingRequestId}/assign-pmi`, { method: 'PATCH' })
+        .catch(e => console.warn('Gagal assign PMI ke request:', e)),
+      api.users.updateRequestStatus(approvingRequestId, 'diproses')
+        .catch(e => console.warn('Gagal sync status ke API:', e)),
+      api.orders.createDelivery(newDelivery)
+        .catch(e => console.warn('Gagal sync delivery ke API:', e)),
+    ]);
+
+    // 4. Beri feedback sukses
+    toast.success(`Permintaan disetujui! Driver "${selectedDriver.name}" telah ditugaskan.`);
+    setApprovingRequestId(null);
+  };
+
+  const handleApprovePublic = (id: string) => {
+    const req = publicRequests.find(r => r.id === id);
+    if (req) {
+      setApprovingPublicRequestId(id);
+      if (drivers.length > 0) {
+        setChosenDriverId(drivers[0].id);
+      } else {
+        setChosenDriverId('');
+      }
+    }
+  };
+
+  const confirmPublicApprovalWithDriver = async () => {
+    if (!approvingPublicRequestId) return;
+    const req = publicRequests.find(r => r.id === approvingPublicRequestId);
+    if (!req) return;
+
+    if (!chosenDriverId) {
+      toast.error('Silakan daftarkan atau pilih driver terlebih dahulu!');
+      return;
+    }
+
+    const selectedDriver = drivers.find(d => d.id === chosenDriverId);
+    if (!selectedDriver) {
+      toast.error('Driver terpilih tidak valid.');
+      return;
+    }
+
+    try {
+      await fetch(`${api.baseUrl}/orders/public-requests/${req.id}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('bloodlink_token')}` },
+        body: JSON.stringify({ status: 'accepted', driver_id: chosenDriverId })
+      });
+      setPublicRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: 'accepted' } : r));
+      toast.success(`Request diproses! Driver ${selectedDriver.name} ditugaskan.`);
+      setApprovingPublicRequestId(null);
+    } catch (e) {
+      toast.error('Gagal menyetujui request');
+    }
+  };
+  const handleReject = (id: string) => {
+    setRequests(prev => prev.map(r => r.id === id ? { ...r, status: 'ditolak' as const } : r));
+  };
+
+  const handleAddDriver = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSubmittingDriver) return;
+
+    // Validasi semua field
+    const errs: Record<string,string> = {};
+    const nameErr = validateName(newDriverName);
+    if (nameErr) errs.name = nameErr;
+    const emailErr = validateEmail(newDriverEmail);
+    if (emailErr) errs.email = emailErr;
+    const pwErr = validatePassword(newDriverPassword);
+    if (pwErr) errs.password = pwErr;
+    const phoneErr = validatePhone(newDriverPhone, false);
+    if (phoneErr) errs.phone = phoneErr;
+    const plateErr = validateVehiclePlate(newDriverVehicle, false);
+    if (plateErr) errs.vehicle = plateErr;
+
+    if (Object.keys(errs).length > 0) {
+      setDriverErrors(errs);
+      return;
+    }
+    setDriverErrors({});
+
+    setIsSubmittingDriver(true);
+    const orgName = user?.org || 'PMI Pusat';
+    let newId = `drv_${Date.now()}`;
+
+    try {
+      try {
+        const res: any = await api.users.create({
+          name: newDriverName.trim(),
+          email: newDriverEmail.trim().toLowerCase(),
+          password: newDriverPassword,
+          role: 'driver',
+          phone: newDriverPhone,
+          org: orgName,
+          vehicle_no: newDriverVehicle.trim().toUpperCase()
+        });
+        if (res?.user?.id) newId = String(res.user.id);
+      } catch (e: any) {
+        toast.warning('Akun driver tersimpan lokal (backend offline): ' + e.message);
+      }
+
+      const addedDriver = {
+        id: newId,
+        name: newDriverName.trim(),
+        email: newDriverEmail.trim().toLowerCase(),
+        phone: newDriverPhone || '-',
+        vehicleNo: newDriverVehicle.trim().toUpperCase() || '-',
+        org: orgName,
+        password: newDriverPassword
+      };
+
+      setDrivers(prev => [...prev, addedDriver]);
+      setNewDriverName('');
+      setNewDriverEmail('');
+      setNewDriverPhone('');
+      setNewDriverVehicle('');
+      setNewDriverPassword('');
+      setShowAddDriverModal(false);
+      toast.success(`Driver "${newDriverName.trim()}" berhasil ditambahkan!`);
+    } finally {
+      setIsSubmittingDriver(false);
+    }
+  };
+
+
+  const handleDeleteDriver = async (id: string) => {
+    // Hapus dari API MySQL
+    try {
+      await api.users.delete(id);
+    } catch (e) { console.warn('Gagal hapus driver dari API:', e); }
+
+    setDrivers(prev => prev.filter(d => d.id !== id));
+    toast.success('Driver berhasil dihapus.');
+  };
+
+  const refreshDrivers = async () => {
+    try {
+      const data: any = await api.users.getAll('driver', []);
+      setDrivers(Array.isArray(data) ? data.map((d: any) => ({
+        id: String(d.id), name: d.name, email: d.email,
+        phone: d.phone || '-',
+        vehicleNo: d.address || '-',
+        org: d.org || user?.org || 'PMI'
+      })) : []);
+      toast.success(`${Array.isArray(data) ? data.length : 0} driver dimuat ulang.`);
+    } catch (e) {
+      toast.error('Gagal memuat ulang driver.');
+    }
+  };
+
+  const handleDeleteEvent = async (id: string) => {
+    try {
+      await api.events.delete(id).catch((e: any) => console.warn('Gagal hapus event dari API:', e));
+    } catch (e) { console.warn('Gagal hapus event:', e); }
+    setEventsList(prev => prev.filter(e => e.id !== id));
+    toast.success('Event berhasil dihapus.');
+  };
+
+  const handleCreateEvent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const errs: Record<string, string> = {};
+    const nameVal = newEventName.trim();
+    const dateVal = newEventDate;
+    const locVal = newEventLocation.trim();
+    const capVal = newEventCapacity;
+
+    if (!nameVal) errs.name = 'Nama event tidak boleh kosong';
+    else if (nameVal.length < 3) errs.name = 'Nama event minimal 3 karakter';
+    if (!dateVal) errs.date = 'Tanggal event tidak boleh kosong';
+    else if (!validateFutureDate(dateVal)) errs.date = 'Tanggal event tidak valid';
+    if (!locVal) errs.location = 'Lokasi event tidak boleh kosong';
+    if (capVal < 1) errs.capacity = 'Kapasitas minimal 1 orang';
+
+    if (Object.keys(errs).length > 0) {
+      setEventErrors(errs);
+      return;
+    }
+    setEventErrors({});
+
+    try {
+      const res: any = await api.events.create({
+        name: nameVal,
+        date: dateVal,
+        time: newEventTime || undefined,
+        location: locVal,
+        address: locVal,
+        description: newEventDescription.trim() || undefined,
+        capacity: capVal,
+        organizer: user?.org || user?.name || 'PMI'
+      });
+      const newId = res?.event?.id ? String(res.event.id) : `evt_${Date.now()}`;
+      setEventsList(prev => [...prev, {
+        id: newId,
+        name: nameVal,
+        date: dateVal,
+        location: locVal,
+        target: capVal,
+        registered: 0
+      }]);
+      setNewEventName('');
+      setNewEventDate('');
+      setNewEventTime('');
+      setNewEventLocation('');
+      setNewEventCapacity(50);
+      setNewEventDescription('');
+      setShowAddEventModal(false);
+      toast.success(`Event "${nameVal}" berhasil dibuat!`);
+    } catch (err: any) {
+      toast.error('Gagal membuat event: ' + (err.message || 'Terjadi kesalahan'));
+    }
+  };
+
+  const handleDiscardExpired = (type: string) => {
+    const item = stocks.find(s => s.type === type);
+    if (!item) return;
+
+    // 1. Check from batches
+    let expiredQtyFromBatches = 0;
+    let newBatches = item.batches || [];
+    if (item.batches && item.batches.length > 0) {
+      const expiredBatches = item.batches.filter(b => isExpired(b.expDate));
+      expiredQtyFromBatches = expiredBatches.reduce((sum, b) => sum + b.qty, 0);
+      newBatches = item.batches.filter(b => !isExpired(b.expDate));
+    }
+
+    // 2. Decide the amount to discard
+    const discardQty = expiredQtyFromBatches > 0 ? expiredQtyFromBatches : item.expiringSoon;
+
+    if (discardQty > 0) {
+      setStocks(prev => prev.map(s => {
+        if (s.type === type) {
+          const newStock = Math.max(0, s.stock - discardQty);
+          const newExpiringSoon = Math.max(0, s.expiringSoon - discardQty);
+          // Recalculate status
+          const pct = Math.round((newStock / s.target) * 100);
+          const newStatus = pct >= 60 ? 'good' : pct >= 30 ? 'low' : 'critical';
+          return {
+            ...s,
+            stock: newStock,
+            expiringSoon: newExpiringSoon,
+            status: newStatus as StockStatus,
+            batches: newBatches,
+            lastUpdated: 'Baru saja'
+          };
+        }
+        return s;
+      }));
+      toast.success(`Berhasil membuang ${discardQty} kantong darah golongan ${type} yang kadaluarsa.`);
+    } else {
+      toast.error(`Tidak ditemukan stok kadaluarsa untuk golongan darah ${type}.`);
+    }
+  };
+
+  const handleFastPrint = (bloodType: string) => {
+    const bloodStock = stocks.find(s => s.type === bloodType);
+    if (!bloodStock || !bloodStock.batches || bloodStock.batches.length === 0) {
+      toast.error(`Tidak ada kantong darah ${bloodType} untuk dicetak`);
+      return;
+    }
+    const latestBatch = bloodStock.batches[0];
+    const bagCodesToPrint = (latestBatch.codes && latestBatch.codes.length > 0) ? latestBatch.codes : [latestBatch.id];
+    
+    setPrintBagInfo({
+      bagCodes: bagCodesToPrint,
+      bloodType: bloodType,
+      expDate: latestBatch.expDate,
+      sourceName: latestBatch.sourceName
+    });
+    setShowPrintModal(true);
+  };
+
+  const handleStockActionSubmit = async (data: any) => {
+    setIsSaving(true);
+    try {
+      if (stockModalConfig.actionType === 'in') {
+        const res: any = await api.stock.addLedger({
+          blood_type: stockModalConfig.bloodType,
+          ...data
+        });
+        toast.success('Stok berhasil diperbarui');
+        setStockModalConfig(prev => ({...prev, isOpen: false}));
+        
+        if (res?.bagCodes && res.bagCodes.length > 0) {
+          setPrintBagInfo({ bagCodes: res.bagCodes, bloodType: stockModalConfig.bloodType, expDate: data.exp_date, sourceName: data.source_name || data.source_type });
+          setShowPrintModal(true);
+        }
+      } else {
+        const newStock = stockModalConfig.currentStock - data.quantity;
+        await api.stock.updatePMIStock(user?.org || user?.name || 'PMI', stockModalConfig.bloodType, newStock, data.reason, data.reason_detail);
+        toast.success('Stok berhasil diperbarui');
+        setStockModalConfig(prev => ({...prev, isOpen: false}));
+      }
+      
+      // Refresh stok + kantong setelah aksi modal
+      const [updatedStock, updatedBags] = await Promise.all([
+        api.stock.getPMIStock([]),
+        api.stock.getBags({ status: 'available' }).catch(() => [])
+      ]);
+
+      // Grouping ulang batch dari data kantong terbaru
+      const bagsByType: Record<string, StockBatch[]> = {};
+      if (Array.isArray(updatedBags)) {
+        updatedBags
+          .filter((b: any) => b.owner_id === user?.id)
+          .forEach((b: any) => {
+            if (!bagsByType[b.blood_type]) bagsByType[b.blood_type] = [];
+            const bk = `${b.exp_date}||${b.source_name || ''}`;
+            const ex = bagsByType[b.blood_type].find((bt: StockBatch) => `${bt.expDate}||${bt.sourceName || ''}` === bk);
+            if (ex) { 
+                ex.qty += 1; 
+                if (ex.codes && b.bag_code) ex.codes.push(b.bag_code);
+            }
+            else { bagsByType[b.blood_type].push({ 
+                id: b.bag_code, 
+                codes: b.bag_code ? [b.bag_code] : [],
+                qty: 1, 
+                entryDate: b.collected_at?.split('T')[0] || '', 
+                expDate: b.exp_date?.split('T')[0] || '', 
+                sourceName: b.source_name, 
+                addedByName: b.added_by_name, 
+                direction: 'in' 
+            }); }
+          });
+      }
+
+      if (updatedStock) {
+        setStocks(stocks.map(s => {
+          const found = updatedStock.find((us: any) => us.blood_type === s.type && us.pmi_id === user?.id);
+          if (found) {
+            return { ...s, stock: found.stock, status: found.status, batches: bagsByType[s.type] || s.batches };
+          }
+          return { ...s, batches: bagsByType[s.type] || s.batches };
+        }));
+      }
+
+      // Refresh ledger kalau tab-nya aktif
+      if (activeTab === 'ledger') {
+        const d = await api.stock.getLedger();
+        setLedger(Array.isArray(d) ? d : []);
+      }
+    } catch (e: any) {
+      toast.error('Gagal: ' + (e.message || 'Gagal memperbarui stok'));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const openStockModal = (bloodType: string, actionType: StockActionType) => {
+    const blood = stocks.find(s => s.type === bloodType);
+    setStockModalConfig({
+      isOpen: true,
+      actionType,
+      bloodType,
+      currentStock: blood ? blood.stock : 0
+    });
+  };
+
+  const updateSingleStock = (type: string, key: 'stock' | 'target' | 'expiringSoon', val: number) => {
+    setIsDirty(true);
+    setStocks(prev => prev.map(s => {
+      if (s.type === type) {
+        const newStock = key === 'stock' ? Math.max(0, val) : s.stock;
+        const newTarget = key === 'target' ? Math.max(1, val) : s.target;
+        const newExpiringSoon = key === 'expiringSoon' ? Math.max(0, val) : s.expiringSoon;
+        
+        // Recalculate status
+        const pct = Math.round((newStock / newTarget) * 100);
+        const newStatus = pct >= 60 ? 'good' : pct >= 30 ? 'low' : 'critical';
+
+        return {
+          ...s,
+          stock: newStock,
+          target: newTarget,
+          expiringSoon: newExpiringSoon,
+          status: newStatus,
+          lastUpdated: 'Baru saja'
+        };
+      }
+      return s;
+    }));
+  };
+
+  const saveStocksToDatabase = async () => {
+    try {
+      // Panggil API update untuk masing-masing golongan darah
+      const updatePromises = stocks.map(s => 
+        api.stock.updatePMIStock(myPmiName, s.type, s.stock)
+      );
+      await Promise.all(updatePromises);
+      setIsDirty(false);
+      toast.success('Stok berhasil disimpan ke database!');
+    } catch (err: any) {
+      toast.error('Gagal menyimpan stok: ' + err.message);
+    }
+  };
+
+  // Register to AutoSaveContext for auto-save during logout
+  useEffect(() => {
+    if (isDirty) {
+      return registerAutoSave(async () => {
+        await saveStocksToDatabase();
+      });
+    }
+  }, [isDirty, saveStocksToDatabase, registerAutoSave]);
+
+  const preventNegativeInput = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === '-' || e.key === 'e' || e.key === '+' || e.key === 'E') {
+      e.preventDefault();
+    }
+  };
+
+  const handleBroadcast = async () => {
+    const finalMsg = broadcastMsg.trim() ||
+      `Halo, PMI membutuhkan donor darah golongan ${broadcastType} segera. Stok kami sangat kritis. Harap segera hubungi kami.`;
+
+    setIsBroadcasting(true);
+    try {
+      // Siapkan payload: HANYA MASUKKAN field jika user ISI / TIDAK KOSONG
+      // (semua field BARU = optional; jika kosong, backend pakai default aman)
+      const payload: any = {
+        blood_type: broadcastType,
+        title: `🚨 Darurat Stok Darah ${broadcastType}`,
+        message: finalMsg
+      };
+      if (broadcastUrgency) payload.urgency_level = broadcastUrgency;
+      if (broadcastRadiusKm !== '' && Number(broadcastRadiusKm) > 0) {
+        payload.radius_km = Number(broadcastRadiusKm);
+        if (broadcastUseMyLocation && broadcastLat !== '' && broadcastLng !== '') {
+          payload.lat = Number(broadcastLat);
+          payload.lng = Number(broadcastLng);
+        }
+      }
+      if (broadcastUrgency === 'code-red' && broadcastCodeRedReason.trim()) {
+        payload.reason = broadcastCodeRedReason.trim();
+      }
+
+      const result: any = await (api.notifications as any).broadcast(payload);
+      setBroadcastSent(true);
+      if (result.sent > 0) {
+        toast.success(`Broadcast terkirim ke ${result.sent} donor golongan ${broadcastType}!`);
+      } else {
+        toast.info(result.message || `Tidak ada donor terdaftar dengan golongan ${broadcastType}.`);
+      }
+      // Tampilkan rate limit warning jika ada
+      if (result?._compliance?.rate_limit_warning) {
+        setTimeout(() => toast.warning(result._compliance.rate_limit_warning), 800);
+      }
+      // Refresh logs otomatis setelah kirim broadcast (jika tab broadcast terbuka)
+      setTimeout(async () => {
+        if (activeTab === 'broadcast') {
+          try {
+            const logsRes: any = await api.notifications.listBroadcastLogs();
+            if (logsRes?.logs) setBroadcastLogs(Array.isArray(logsRes.logs) ? logsRes.logs : []);
+          } catch {}
+        }
+      }, 1500);
+      setTimeout(() => {
+        setBroadcastSent(false);
+        setShowBroadcastModal(false);
+        setBroadcastMsg('');
+        setBroadcastUrgency('');
+        setBroadcastRadiusKm('');
+        setBroadcastCodeRedReason('');
+      }, 2500);
+    } catch (e: any) {
+      toast.error(e?.message || 'Gagal mengirim broadcast. Pastikan backend berjalan dan coba lagi.');
+    } finally {
+      setIsBroadcasting(false);
+    }
+  };
+
+  // ─── BARU: Effect load broadcast logs ketika activeTab === 'broadcast' ───
+  useEffect(() => {
+    if (activeTab !== 'broadcast') return;
+    let alive = true;
+    (async () => {
+      setIsLoadingBroadcastLogs(true);
+      try {
+        const res: any = await api.notifications.listBroadcastLogs();
+        if (alive) {
+          setBroadcastLogs(res?.logs && Array.isArray(res.logs) ? res.logs : []);
+        }
+      } catch {
+        if (alive) setBroadcastLogs([]);
+      } finally {
+        if (alive) setIsLoadingBroadcastLogs(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [activeTab]);
+
+  // ─── BARU: Effect preview donor estimasi akurat saat modal show + perubahan filter ───
+  useEffect(() => {
+    if (!showBroadcastModal) return;
+    let cancelled = false;
+    (async () => {
+      setIsLoadingPreview(true);
+      try {
+        const payload: any = { blood_type: broadcastType };
+        if (broadcastRadiusKm !== '' && Number(broadcastRadiusKm) > 0 && broadcastUseMyLocation && broadcastLat !== '' && broadcastLng !== '') {
+          payload.radius_km = Number(broadcastRadiusKm);
+          payload.lat = Number(broadcastLat);
+          payload.lng = Number(broadcastLng);
+        }
+        const res: any = await api.notifications.broadcastPreview(payload);
+        if (!cancelled) setPreviewDonor({
+          eligible: Number(res?.eligible || 0),
+          registered_total: Number(res?.registered_total || 0),
+          filtered_out: Number(res?.filtered_out || 0)
+        });
+      } catch {
+        if (!cancelled) setPreviewDonor({ eligible: 0, registered_total: 0, filtered_out: 0 });
+      } finally {
+        if (!cancelled) setIsLoadingPreview(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [showBroadcastModal, broadcastType, broadcastRadiusKm, broadcastUseMyLocation, broadcastLat, broadcastLng]);
+
+  // ─── BARU: Handler follow-up status donor di riwayat broadcast ───
+  const handleFollowupSubmit = async (viewId: number|string) => {
+    const input = followupInputMap[viewId] || { status: 'contacted', notes: '' };
+    if (!input.notes.trim() && input.status === 'contacted') {
+      toast.info('Isi catatan follow-up minimal 1 karakter');
+      return;
+    }
+    setIsSubmittingFollowup(viewId);
+    try {
+      await api.notifications.updateBroadcastResponseFollowup(viewId, input.status, input.notes.trim());
+      toast.success('Status follow-up diperbarui');
+      setFollowupInputMap(prev => { const n = {...prev}; delete n[viewId]; return n; });
+      // Refresh logs
+      const logsRes: any = await api.notifications.listBroadcastLogs();
+      if (logsRes?.logs) setBroadcastLogs(Array.isArray(logsRes.logs) ? logsRes.logs : []);
+    } catch (e: any) {
+      toast.error(e?.message || 'Gagal update follow-up');
+    } finally {
+      setIsSubmittingFollowup(null);
+    }
+  };
+
+  const filteredDonors = donorList.filter(d => {
+    const matchSearch = d.name.toLowerCase().includes(searchDonor.toLowerCase()) || d.bloodType.includes(searchDonor.toUpperCase());
+    const matchBlood = filterBlood === 'Semua' || d.bloodType === filterBlood;
+    return matchSearch && matchBlood;
+  });
+
+  const bloodTypes = ['Semua', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
+
+  return (
+    <div className="min-h-screen py-8 bg-[#F7F7FB]">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+
+        {/* Header */}
+        <div className="flex items-start justify-between mb-8">
+          <div>
+            <p className="text-xs font-semibold text-[#C0392B] uppercase tracking-wider mb-1">Dashboard Unit PMI</p>
+            <h1 className="text-2xl md:text-3xl font-bold text-[#1A1A2E] flex items-center gap-2" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+              <Droplets className="w-7 h-7 text-[#C0392B] fill-[#C0392B]" />
+              {user?.org || 'PMI A'}
+            </h1>
+            <p className="text-sm text-[#4A4A6A] mt-1">Jl. Jend. Gatot Subroto Kav. 96, Jakarta</p>
+          </div>
+          <div className="hidden sm:flex items-center gap-2 bg-[#EAFAF1] text-[#1E8449] px-3 py-1.5 rounded-xl text-xs font-semibold">
+            <span className="w-2 h-2 rounded-full bg-[#27AE60] animate-pulse" />
+            Sistem Online
+          </div>
+        </div>
+
+        {/* Stats Row */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4 mb-6 sm:mb-8">
+          {[
+            {
+              label: 'Total Stok Darah',
+              value: stocks.reduce((acc, s) => acc + (Number(s.stock) || 0), 0),
+              unit: 'kantong',
+              sub: 'Total seluruh golongan',
+              icon: Droplets,
+              iconBg: 'bg-[#FDEDEC] dark:bg-[#2a1218]',
+              iconColor: 'text-[#C0392B]',
+              subColor: 'text-[#27AE60]',
+              pulse: false,
+              isNumeric: true,
+            },
+            {
+              label: 'Stok Kritis',
+              value: criticalStocks,
+              unit: 'tipe',
+              sub: criticalStocks > 0 ? 'Perlu broadcast segera' : 'Kapasitas aman',
+              icon: AlertTriangle,
+              iconBg: 'bg-[#FDEDEC] dark:bg-[#2a1218]',
+              iconColor: 'text-[#C0392B]',
+              subColor: criticalStocks > 0 ? 'text-[#C0392B]' : 'text-[#27AE60]',
+              pulse: criticalStocks > 0,
+              isNumeric: true,
+            },
+            {
+              label: 'Request Pending',
+              value: pendingCount,
+              unit: 'permohonan',
+              sub: 'Butuh persetujuan RS',
+              icon: Bell,
+              iconBg: 'bg-[#FEF9E7] dark:bg-[#221a08]',
+              iconColor: 'text-[#E67E22]',
+              subColor: 'text-[#E67E22]',
+              pulse: pendingCount > 0,
+              isNumeric: true,
+            },
+            {
+              label: 'Donor Aktif',
+              value: eligibleDonors,
+              unit: `dari ${totalDonors || 0}`,
+              sub: 'Siap melakukan donor',
+              icon: Users,
+              iconBg: 'bg-[#EAF7FB] dark:bg-[#0e1e26]',
+              iconColor: 'text-[#2980B9]',
+              subColor: 'text-[#2980B9]',
+              pulse: false,
+              isNumeric: true,
+            },
+          ].map(({ label, value, unit, sub, icon: Icon, iconBg, iconColor, subColor, pulse, isNumeric }, idx) => (
+            <motion.div
+              key={label}
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.35, delay: idx * 0.07 }}
+              whileHover={{ y: -3, transition: { duration: 0.2 } }}
+              className="bg-white dark:bg-[#13131f] rounded-2xl border border-border shadow-xs hover:shadow-md p-4 sm:p-5 transition-all relative overflow-hidden"
+            >
+              <div className={`${iconBg} rounded-xl w-9 h-9 flex items-center justify-center mb-3 relative`}>
+                <Icon className={`w-4 h-4 ${iconColor}`} />
+                {pulse && <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-[#E74C3C] rounded-full animate-ping" />}
+              </div>
+              <p className="text-xs text-[#9B9BB5] font-medium">{label}</p>
+              <p className="text-xl sm:text-2xl font-bold text-[#1A1A2E] dark:text-white mt-0.5 tracking-tight" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+                {isNumeric ? <AnimatedCounter value={Number(value)} /> : value} <span className="text-xs font-semibold text-[#9B9BB5]">{unit}</span>
+              </p>
+              <p className={`text-xs mt-1 font-medium ${subColor}`}>{sub}</p>
+            </motion.div>
+          ))}
+        </div>
+
+        {/* Tabs */}
+        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)}>
+          <TabsList className="bg-white dark:bg-[#13131f] border border-border rounded-xl p-1 mb-6 flex overflow-x-auto max-w-full gap-1 h-auto no-scrollbar flex-nowrap shrink-0">
+            {[
+              { value: 'overview', label: 'Ringkasan & Analitik', icon: BarChart2 },
+              { value: 'requests', label: 'Permohonan Masuk', icon: Bell },
+              { value: 'public-requests', label: 'Permintaan Publik', icon: Droplets },
+              { value: 'stock', label: 'Manajemen Stok', icon: Package },
+              { value: 'donors', label: 'Database Donor', icon: Users },
+              { value: 'events', label: 'Event Donor', icon: Calendar },
+              { value: 'broadcast', label: 'Broadcast Donor', icon: Megaphone },
+              { value: 'drivers', label: 'Kelola Driver', icon: Truck },
+              { value: 'ledger', label: 'Riwayat Stok', icon: RefreshCw },
+            ].map(({ value, label, icon: Icon }) => (
+              <TabsTrigger key={value} value={value} className="rounded-lg text-xs sm:text-sm data-[state=active]:bg-[#C0392B] data-[state=active]:text-white data-[state=active]:shadow-xs flex items-center gap-1.5 font-semibold transition-all">
+                <Icon className="w-3.5 h-3.5" />
+                {label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+
+          {/* ── Tab: Overview & Analitik Beranimasi ──────────────────── */}
+          <TabsContent value="overview" className="space-y-6">
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3 }}
+              className="space-y-6"
+            >
+              {/* Charts Section */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div className="lg:col-span-2">
+                  <StockDistributionChart data={stocks} title="Grafik Distribusi Stok Darah vs Target Ideal" />
+                </div>
+                <div>
+                  <BloodDonutChart data={stocks} />
+                </div>
+              </div>
+
+              <div>
+                <StockTrendsChart title="Grafik Tren Penyaluran & Penerimaan Darah Unit PMI" />
+              </div>
+
+              {/* Tabel Ringkasan Ketersediaan Stok */}
+              <div className="bg-white dark:bg-[#13131f] rounded-2xl border border-border shadow-xs overflow-hidden">
+                <div className="p-4 sm:p-5 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h3 className="font-bold text-[#1A1A2E] dark:text-white text-base" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+                      Tabel Ketersediaan Stok Darah (Real-time)
+                    </h3>
+                    <p className="text-xs text-[#9B9BB5] mt-0.5">
+                      Monitoring kuota kantong darah dengan visual progress bar beranimasi
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setActiveTab('stock')}
+                    className="flex items-center gap-1.5 text-xs text-[#C0392B] font-bold hover:underline bg-[#FDEDEC] dark:bg-[#2a1218] px-3.5 py-1.5 rounded-xl transition-colors self-start sm:self-auto cursor-pointer"
+                  >
+                    Kelola Stok Lengkap →
+                  </button>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-[#F4F4F8] dark:bg-[#1a1a2a] text-[#9B9BB5] font-bold uppercase tracking-wider text-[11px] border-b border-border">
+                        <th className="text-left px-5 py-3.5">Golongan</th>
+                        <th className="text-left px-5 py-3.5">Kapasitas & Persentase</th>
+                        <th className="text-center px-5 py-3.5">Stok Saat Ini</th>
+                        <th className="text-center px-5 py-3.5">Target</th>
+                        <th className="text-center px-5 py-3.5">Status</th>
+                        <th className="text-center px-5 py-3.5">Mendekati ED</th>
+                        <th className="text-right px-5 py-3.5">Aksi Cepat</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {stocks.map((blood, idx) => {
+                        const pct = Math.round((blood.stock / Math.max(1, blood.target)) * 100);
+                        const status = pct >= 60 ? 'good' : pct >= 30 ? 'low' : 'critical';
+                        const sc = {
+                          good: { bg: '#EAFAF1', text: '#1E8449', bar: '#27AE60', label: 'Cukup' },
+                          low: { bg: '#FEF9E7', text: '#E67E22', bar: '#E67E22', label: 'Rendah' },
+                          critical: { bg: '#FDEDEC', text: '#C0392B', bar: '#E74C3C', label: 'Kritis' },
+                        }[status];
+
+                        const expiringSoonBags = blood.batches?.filter(b => isExpiringSoon(b.expDate)).reduce((sum, b) => sum + b.qty, 0) || 0;
+
+                        return (
+                          <motion.tr
+                            key={blood.type}
+                            initial={{ opacity: 0, x: -8 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            transition={{ duration: 0.25, delay: idx * 0.04 }}
+                            className="hover:bg-[#F9F9FC] dark:hover:bg-[#181827] transition-colors"
+                          >
+                            <td className="px-5 py-3.5">
+                              <div className="flex items-center gap-2.5">
+                                <div
+                                  className="w-8 h-8 rounded-xl flex items-center justify-center font-bold text-white text-xs shadow-xs"
+                                  style={{ backgroundColor: btColor[blood.type] || '#C0392B' }}
+                                >
+                                  {blood.type}
+                                </div>
+                                <div>
+                                  <span className="font-bold text-sm text-[#1A1A2E] dark:text-white">Golongan {blood.type}</span>
+                                  <span className="text-[10px] text-[#9B9BB5] block">Rhesus {blood.type.includes('+') ? 'Positif' : 'Negatif'}</span>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-5 py-3.5 min-w-[170px]">
+                              <div className="space-y-1">
+                                <div className="flex justify-between text-[11px]">
+                                  <span className="text-[#9B9BB5]">Keterisian:</span>
+                                  <span className="font-bold text-[#1A1A2E] dark:text-white">{pct}%</span>
+                                </div>
+                                <AnimatedProgressBar value={pct} barColor={sc.bar} height="h-2" showGlow={pct >= 60} />
+                              </div>
+                            </td>
+                            <td className="px-5 py-3.5 text-center">
+                              <span className="font-black text-sm text-[#1A1A2E] dark:text-white">
+                                <AnimatedCounter value={blood.stock} />
+                              </span>
+                              <span className="text-[10px] text-[#9B9BB5] block">kantong</span>
+                            </td>
+                            <td className="px-5 py-3.5 text-center text-[#4A4A6A] dark:text-[#a5a5c5] font-semibold">
+                              {blood.target} ktg
+                            </td>
+                            <td className="px-5 py-3.5 text-center">
+                              <span
+                                className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase px-2.5 py-1 rounded-full border border-black/5"
+                                style={{ background: sc.bg, color: sc.text }}
+                              >
+                                <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: sc.text }} />
+                                {sc.label}
+                              </span>
+                            </td>
+                            <td className="px-5 py-3.5 text-center">
+                              {expiringSoonBags > 0 ? (
+                                <span className="text-[#E67E22] font-bold bg-[#FEF9E7] dark:bg-[#221a08] px-2 py-0.5 rounded-full text-[10px]">
+                                  {expiringSoonBags} ktg
+                                </span>
+                              ) : (
+                                <span className="text-[#9B9BB5]">—</span>
+                              )}
+                            </td>
+                            <td className="px-5 py-3.5 text-right">
+                              <button
+                                onClick={() => openStockModal(blood.type, 'in')}
+                                className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#1E8449] bg-[#EAFAF1] hover:bg-[#D4EFDF] dark:bg-[#0e2018] dark:hover:bg-[#1a3525] px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer"
+                              >
+                                <Plus className="w-3 h-3" /> Masuk
+                              </button>
+                            </td>
+                          </motion.tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Permohonan Mendesak Section if pending exists */}
+              {pendingCount > 0 && (
+                <div className="bg-[#FDEDEC]/50 dark:bg-[#2a1218]/40 border border-[#C0392B]/20 rounded-2xl p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <Bell className="w-4 h-4 text-[#C0392B] animate-bounce" />
+                      <h4 className="font-bold text-[#1A1A2E] dark:text-white text-sm">
+                        Permohonan Mendesak Menunggu Persetujuan ({pendingCount})
+                      </h4>
+                    </div>
+                    <button
+                      onClick={() => setActiveTab('requests')}
+                      className="text-xs font-bold text-[#C0392B] hover:underline cursor-pointer"
+                    >
+                      Lihat Semua Permohonan →
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {displayedRequests.filter(r => r.status === 'pending').slice(0, 3).map(req => (
+                      <div key={req.id} className="bg-white dark:bg-[#13131f] p-3.5 rounded-xl border border-border shadow-xs flex items-center justify-between gap-2">
+                        <div>
+                          <p className="font-bold text-xs text-[#1A1A2E] dark:text-white truncate max-w-[150px]">{req.hospital}</p>
+                          <p className="text-[10px] text-[#9B9BB5]">{req.qty} kantong Golongan <strong className="text-[#C0392B]">{req.bloodType}</strong></p>
+                        </div>
+                        <button
+                          onClick={() => handleApprove(req.id)}
+                          className="bg-[#C0392B] hover:bg-[#922B21] text-white px-3 py-1.5 rounded-lg text-xs font-semibold shrink-0 transition-colors cursor-pointer shadow-xs active:scale-95"
+                        >
+                          Setujui
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          </TabsContent>
+
+          {/* ── Tab: Permohonan Masuk ─────────────────────────────── */}
+          <TabsContent value="requests" id="requests-section" className="space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h3 className="font-bold text-[#1A1A2E]" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>Permohonan Darah Masuk</h3>
+                <p className="text-xs text-[#9B9BB5] mt-0.5">Setujui atau tolak permohonan darah yang masuk</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => setRequestFilter('semua')}
+                  className={`px-3 py-1 rounded-full text-xs font-bold transition-colors ${requestFilter === 'semua' ? 'bg-[#1A1A2E] text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}
+                >
+                  Semua
+                </button>
+                {(['darurat', 'mendesak', 'normal'] as Priority[]).map(p => {
+                  const cfg = priorityConfig[p];
+                  const cnt = displayedRequests.filter(r => r.priority === p).length;
+                  if (cnt === 0) return null;
+                  return (
+                    <button
+                      key={p}
+                      onClick={() => setRequestFilter(p)}
+                      className={`px-3 py-1 rounded-full text-xs font-bold transition-colors flex items-center gap-1.5`}
+                      style={requestFilter === p ? { background: cfg.bg, color: cfg.text, outline: `1px solid ${cfg.text}` } : { background: '#F3F4F6', color: '#6B7280' }}
+                    >
+                      <span>{cfg.label}</span>
+                      <span className="w-5 h-5 flex items-center justify-center rounded-full text-[10px]" style={{ background: requestFilter === p ? 'rgba(0,0,0,0.05)' : '#E5E7EB', color: requestFilter === p ? cfg.text : '#9CA3AF' }}>{cnt}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Sort by priority */}
+            {(['darurat', 'mendesak', 'normal'] as Priority[])
+              .filter(priority => requestFilter === 'semua' || requestFilter === priority)
+              .map(priority => {
+              const filtered = displayedRequests.filter(r => r.priority === priority);
+              if (filtered.length === 0) return null;
+              const p = priorityConfig[priority];
+              return (
+                <div key={priority}>
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="w-2 h-2 rounded-full" style={{ background: p.dot }} />
+                    <span className="text-xs font-bold uppercase tracking-wide" style={{ color: p.text }}>{p.label}</span>
+                    <span className="text-xs text-[#9B9BB5]">({filtered.length})</span>
+                  </div>
+                  <div className="space-y-3">
+                    {filtered.map(req => (
+                      <RequestCard key={req.id} req={req} onApprove={handleApprove} onReject={handleReject} />
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </TabsContent>
+
+          {/* ── Tab: Permintaan Publik ─────────────────────────────── */}
+          <TabsContent value="public-requests" className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-bold text-[#1A1A2E]" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>Permintaan Darah Publik</h3>
+                <p className="text-xs text-[#9B9BB5] mt-0.5">Permintaan darah langsung dari pasien / masyarakat umum</p>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              {publicRequests.length === 0 ? (
+                <div className="text-center py-8 text-sm text-[#9B9BB5]">Tidak ada permintaan publik saat ini.</div>
+              ) : (
+                publicRequests.map((req) => (
+                  <div key={req.id} className="bg-white border border-border rounded-2xl p-5 hover:shadow-md transition-shadow">
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 flex-wrap mb-1">
+                          <span className="font-bold text-[#1A1A2E] text-sm" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>{req.patient_name}</span>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ background: '#FEF9E7', color: '#E67E22' }}>
+                            {req.urgency === 'darurat' ? 'Darurat' : 'Normal'}
+                          </span>
+                        </div>
+                        <div className="flex flex-col gap-1 text-xs text-[#9B9BB5]">
+                          <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{req.hospital_name} - {req.patient_room}</span>
+                          <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{req.delivery_address}</span>
+                          <span className="flex items-center gap-1"><Phone className="w-3 h-3" />{req.phone} ({req.parent_name})</span>
+                        </div>
+                      </div>
+                      <div className="flex flex-col items-end gap-1.5">
+                        <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white text-xs font-bold" style={{ background: btColor[req.blood_type] || '#C0392B' }}>
+                          {req.blood_type}
+                        </div>
+                        <span className="text-xs font-bold text-[#1A1A2E]">{req.quantity} kantong</span>
+                        <span className="text-[10px] text-gray-500">{req.id}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between pt-3 border-t border-border">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-gray-100 text-gray-700">{req.status.toUpperCase()}</span>
+                      </div>
+                      {req.status === 'pending' && (
+                        <div className="flex gap-2">
+                          <button onClick={async () => {
+                             await fetch(`${api.baseUrl}/orders/public-requests/${req.id}/status`, {
+                               method: 'PUT',
+                               headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+                               body: JSON.stringify({ status: 'rejected' })
+                             });
+                             setPublicRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: 'rejected' } : r));
+                             toast.success('Permintaan publik ditolak');
+                          }} className="px-3 py-1.5 rounded-lg border border-border text-xs text-[#9B9BB5] hover:border-red-300 hover:text-[#C0392B] transition-colors flex items-center gap-1">
+                            <X className="w-3 h-3" /> Tolak
+                          </button>
+                          <button onClick={() => handleApprovePublic(req.id)} className="px-3 py-1.5 rounded-lg bg-[#C0392B] text-white text-xs font-semibold hover:bg-[#922B21] transition-colors flex items-center gap-1">
+                            <CheckCircle className="w-3 h-3" /> Siapkan
+                          </button>
+                        </div>
+                      )}
+                      {req.status === 'accepted' && (
+                        <button onClick={async () => {
+                             await fetch(`${api.baseUrl}/orders/public-requests/${req.id}/status`, {
+                               method: 'PUT',
+                               headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+                               body: JSON.stringify({ status: 'on_delivery' })
+                             });
+                             setPublicRequests(prev => prev.map(r => r.id === req.id ? { ...r, status: 'on_delivery' } : r));
+                             toast.success('Permintaan dikirim');
+                          }} className="px-3 py-1.5 rounded-lg bg-[#2980B9] text-white text-xs font-semibold hover:bg-[#1A5276] transition-colors flex items-center gap-1">
+                            <Truck className="w-3 h-3" /> Kirim
+                          </button>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </TabsContent>
+
+          {/* ── Tab: Manajemen Stok ─────────────────────────── */}
+          <TabsContent value="stock" className="space-y-6">
+            {/* Prediksi shortfall banner dihilangkan sesuai permintaan user */}
+
+            {/* Tombol Simpan Perubahan ke Database */}
+            {isDirty && (
+              <div className="bg-[#EAFAF1] border border-[#27AE60]/30 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3 animate-fade-in shadow-sm">
+                <div>
+                  <p className="text-sm font-bold text-[#27AE60]">Perubahan Stok Belum Disimpan</p>
+                  <p className="text-xs text-[#2E7D32] mt-0.5">Ada data stok darah yang Anda ubah namun belum disinkronkan ke database.</p>
+                </div>
+                <button
+                  onClick={saveStocksToDatabase}
+                  disabled={isSaving}
+                  className="bg-[#27AE60] hover:bg-[#219653] disabled:opacity-50 text-white font-bold py-2.5 px-5 rounded-xl flex items-center gap-1.5 shadow transition-all transform active:scale-95 text-xs uppercase tracking-wider"
+                >
+                  <Save className="w-4 h-4" /> {isSaving ? 'Menyimpan...' : 'Simpan ke Database'}
+                </button>
+              </div>
+            )}
+
+            {/* Visual Chart at Top of Stock Tab */}
+            <div className="mb-6">
+              <StockDistributionChart data={stocks} title="Visualisasi Kapasitas Stok Darah" />
+            </div>
+
+            {/* Stock grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 sm:gap-4">
+              {stocks.map((blood, idx) => {
+                const pct = Math.round((blood.stock / Math.max(1, blood.target)) * 100);
+                const status = pct >= 60 ? 'good' : pct >= 30 ? 'low' : 'critical';
+                const statusColors = {
+                  good: { bg: '#EAFAF1', text: '#1E8449', bar: '#27AE60', label: 'Cukup' },
+                  low: { bg: '#FEF9E7', text: '#E67E22', bar: '#E67E22', label: 'Rendah' },
+                  critical: { bg: '#FDEDEC', text: '#C0392B', bar: '#E74C3C', label: 'Kritis' },
+                };
+                const sc = statusColors[status];
+
+                const expiredBags = blood.batches?.filter(b => isExpired(b.expDate)).reduce((sum, b) => sum + b.qty, 0) || 0;
+                const expiringSoonBags = blood.batches?.filter(b => isExpiringSoon(b.expDate)).reduce((sum, b) => sum + b.qty, 0) || 0;
+
+                return (
+                  <motion.div
+                    key={blood.type}
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.3, delay: idx * 0.05 }}
+                    whileHover={{ y: -3, transition: { duration: 0.2 } }}
+                    className="bg-white dark:bg-[#13131f] rounded-2xl border border-border p-5 hover:shadow-md transition-all"
+                  >
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-3">
+                        <div className="w-11 h-11 rounded-xl flex items-center justify-center text-white font-bold text-sm shadow-sm" style={{ background: btColor[blood.type] }}>
+                          {blood.type}
+                        </div>
+                        <div>
+                          <p className="font-bold text-[#1A1A2E] dark:text-white" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>Golongan {blood.type}</p>
+                          <p className="text-sm font-bold text-[#1A1A2E] dark:text-white">
+                            <AnimatedCounter value={blood.stock} /> kantong
+                          </p>
+                        </div>
+                      </div>
+                      <span className={`text-[11px] px-2.5 py-1 rounded-full font-bold ${blood.stock > 0 ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40' : 'bg-red-50 text-red-600 dark:bg-red-950/40'}`}>
+                        {blood.stock > 0 ? 'Tersedia' : 'Kosong'}
+                      </span>
+                    </div>
+
+                    {/* Animated Capacity Progress Bar */}
+                    <div className="space-y-1 mb-3">
+                      <div className="flex justify-between text-[11px] text-[#4A4A6A] dark:text-[#a5a5c5]">
+                        <span>Kapasitas ({blood.stock}/{blood.target} ktg)</span>
+                        <span className="font-bold">{pct}%</span>
+                      </div>
+                      <AnimatedProgressBar value={pct} barColor={sc.bar} height="h-2" showGlow={pct >= 60} />
+                    </div>
+
+                    <div className="flex items-center justify-between text-xs mt-2 mb-3">
+                      <span className="text-[#9B9BB5] flex items-center gap-1">
+                        <Clock className="w-3.5 h-3.5" /> Terakhir: {blood.lastUpdated || 'Tidak ada data'}
+                      </span>
+                    </div>
+
+                    {/* Expired warning / Expiring soon warning */}
+                    {expiredBags > 0 ? (
+                      <div className="mb-3 bg-[#FDEDEC] rounded-xl p-2.5 flex items-center justify-between border border-[#FDEDEC]/80 animate-pulse">
+                        <span className="text-[11px] text-[#C0392B] font-bold flex items-center gap-1.5">
+                          <AlertTriangle className="w-3.5 h-3.5 text-[#C0392B]" /> Ada {expiredBags} kantong kadaluarsa!
+                        </span>
+                        <button onClick={() => handleDiscardExpired(blood.type)}
+                          className="text-[9px] bg-[#C0392B] hover:bg-[#922B21] text-white px-2.5 py-1 rounded-md font-bold transition-colors shadow-sm flex items-center gap-1">
+                          <Trash2 className="w-3 h-3" /> Buang
+                        </button>
+                      </div>
+                    ) : (expiringSoonBags > 0 || blood.expiringSoon > 0) ? (
+                      <div className="mb-3 bg-[#FEF9E7] rounded-xl p-2.5 flex items-center justify-between border border-[#FEF9E7]/80">
+                        <span className="text-[11px] text-[#E67E22] font-semibold flex items-center gap-1.5">
+                          <AlertTriangle className="w-3.5 h-3.5 text-[#E67E22]" /> Peringatan: {expiringSoonBags || blood.expiringSoon} kantong mendekati kadaluarsa!
+                        </span>
+                        <button onClick={() => handleDiscardExpired(blood.type)}
+                          className="text-[9px] bg-[#E67E22] hover:bg-[#D35400] text-white px-2.5 py-1 rounded-md font-bold transition-colors shadow-sm">
+                          Buang
+                        </button>
+                      </div>
+                    ) : null}
+
+                    {/* Action Buttons for Stock Management */}
+                    <div className="flex flex-wrap items-center gap-2 mt-4 mb-2">
+                      <button
+                        onClick={() => openStockModal(blood.type, 'in')}
+                        className="flex-1 min-w-[30%] py-2.5 rounded-xl bg-green-500 hover:bg-green-600 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-colors shadow-sm"
+                      >
+                        <ArrowDownCircle className="w-4 h-4" /> Masuk
+                      </button>
+                      <button
+                        onClick={() => openStockModal(blood.type, 'out')}
+                        className="flex-1 min-w-[30%] py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-colors shadow-sm"
+                      >
+                        <ArrowUpCircle className="w-4 h-4" /> Keluar
+                      </button>
+                      <button
+                        onClick={() => handleFastPrint(blood.type)}
+                        className="flex-1 min-w-[30%] py-2.5 rounded-xl bg-blue-500 hover:bg-blue-600 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-colors shadow-sm"
+                      >
+                        <Printer className="w-4 h-4" /> Cetak Terakhir
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-2 py-1">
+                      <div>
+                        <span className="text-[9px] font-bold text-[#4A4A6A] block mb-1 text-center">Expired (7 hr)</span>
+                        <input type="number" min={0} value={blood.expiringSoon} onKeyDown={preventNegativeInput} onChange={(e) => updateSingleStock(blood.type, 'expiringSoon', Number(e.target.value))}
+                          className="w-full text-center text-xs font-bold bg-[#F9F9FC] border border-border rounded-lg py-2 focus:border-[#2980B9] focus:ring-0 text-orange-600 shadow-inner" />
+                      </div>
+                    </div>
+
+                    {/* Batches Table/List showing exact inflow dates */}
+                    {blood.batches && blood.batches.length > 0 && (
+                      <div className="mt-3">
+                        <button
+                          onClick={() => toggleBatches(blood.type)}
+                          className="flex items-center justify-between w-full text-[10px] font-bold text-[#4A4A6A] bg-[#F4F4F8] hover:bg-border/40 px-3 py-1.5 rounded-lg transition-colors border border-border/20"
+                        >
+                          <span className="flex items-center gap-1.5">
+                            <Package className="w-3.5 h-3.5" /> 
+                            {expandedBatches[blood.type] ? 'Sembunyikan Detail Batch' : 'Lihat Detail Batch'}
+                          </span>
+                          <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${expandedBatches[blood.type] ? 'rotate-180' : ''}`} />
+                        </button>
+
+                        {expandedBatches[blood.type] && (() => {
+                          const isAllVisible = showAllBatches[blood.type];
+                          const visibleBatches = isAllVisible ? blood.batches : blood.batches.slice(0, 2);
+                          return (
+                            <div className="mt-2 pt-2.5 border-t border-dashed border-border">
+                              <span className="text-[9px] font-bold text-[#4A4A6A] block mb-1.5 uppercase tracking-wider">Detail Batch Masuk</span>
+                              <div className="space-y-1 pr-1">
+                                {visibleBatches.map(b => {
+                                  const expired = isExpired(b.expDate);
+                                  const soon = isExpiringSoon(b.expDate);
+                                  return (
+                                    <div key={b.id} className={`flex items-center justify-between text-[10px] px-2 py-1.5 rounded-md border ${
+                                      expired 
+                                        ? 'bg-[#FDEDEC]/40 border-[#FDEDEC] text-[#C0392B]' 
+                                        : soon 
+                                          ? 'bg-[#FEF9E7]/40 border-[#FEF9E7] text-[#E67E22]' 
+                                          : 'bg-[#F4F4F8] border-border/40 text-[#1A1A2E]'
+                                    }`}>
+                                      <div className="flex flex-col">
+                                        <span className="font-semibold text-[#1A1A2E]">
+                                          {b.sourceName || 'Donor'}
+                                        </span>
+                                        <div className={`font-mono text-[9px] max-w-[130px] flex flex-wrap gap-1 mt-0.5 ${expired ? 'line-through text-[#C0392B]/70' : 'text-[#9B9BB5]'}`}>
+                                          {b.codes && b.codes.length > 0 ? b.codes.map(c => <span key={c}>{c}</span>) : b.id}
+                                        </div>
+                                      </div>
+                                      <div className="flex flex-col items-end gap-1">
+                                        <div className="flex items-center gap-2">
+                                          <span className={`font-bold ${expired ? 'line-through text-[#C0392B]/80' : ''}`}>{b.qty} ktg</span>
+                                          <button 
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setPrintBagInfo({ bagCodes: b.codes && b.codes.length > 0 ? b.codes : [b.id], bloodType: blood.type, expDate: b.expDate, sourceName: b.sourceName });
+                                              setShowPrintModal(true);
+                                            }}
+                                            className="text-gray-400 hover:text-gray-600 transition-colors"
+                                            title="Cetak Label Barcode"
+                                          >
+                                            <Printer className="w-4 h-4" />
+                                          </button>
+                                        </div>
+                                        <span className={`text-[9px] font-medium ${expired ? 'text-[#C0392B]/85' : 'text-[#4A4A6A]'}`}>Exp: {b.expDate}</span>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                              {blood.batches.length > 2 && (
+                                <button
+                                  onClick={() => toggleShowAllBatches(blood.type)}
+                                  className="mt-2 text-[9px] font-bold text-[#2980B9] hover:text-[#1F618D] transition-colors w-full text-center bg-[#F4F4F8]/60 hover:bg-[#F4F4F8] py-1 rounded-md border border-dashed border-border/60"
+                                >
+                                  {isAllVisible 
+                                    ? 'Tampilkan Lebih Sedikit' 
+                                    : `Lihat ${blood.batches.length - 2} Batch Lainnya...`
+                                  }
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    )}
+                  </motion.div>
+                );
+              })}
+            </div>
+          </TabsContent>
+
+          {/* ── Tab: Database Donor ─────────────────────────── */}
+          <TabsContent value="donors" className="space-y-4">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div>
+                <h3 className="font-bold text-[#1A1A2E]" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>Database Donor Aktif</h3>
+                <p className="text-xs text-[#9B9BB5] mt-0.5">{eligibleDonors} donor siap, {totalDonors - eligibleDonors} sedang masa tunggu</p>
+              </div>
+              <button onClick={() => setShowBroadcastModal(true)} className="flex items-center gap-2 bg-[#C0392B] text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-[#922B21] transition-colors">
+                <Megaphone className="w-4 h-4" /> Broadcast Donor Darurat
+              </button>
+            </div>
+
+            {/* Search & Filter */}
+            <div className="flex flex-col sm:flex-row gap-3">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9B9BB5]" />
+                <input
+                  value={searchDonor}
+                  onChange={e => setSearchDonor(e.target.value)}
+                  placeholder="Cari nama atau golongan darah..."
+                  className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-border text-sm focus:outline-none focus:border-[#C0392B] transition-colors"
+                />
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <Filter className="w-4 h-4 text-[#9B9BB5]" />
+                {bloodTypes.map(bt => (
+                  <button key={bt} onClick={() => setFilterBlood(bt)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${filterBlood === bt ? 'bg-[#C0392B] text-white' : 'bg-white border border-border text-[#4A4A6A] hover:border-[#C0392B]'}`}>
+                    {bt}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Donor Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {filteredDonors.map((donor, idx) => (
+                <motion.div
+                  key={donor.id}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.25, delay: idx * 0.03 }}
+                  whileHover={{ y: -2, transition: { duration: 0.15 } }}
+                  className="bg-white dark:bg-[#13131f] rounded-2xl border border-border p-4 flex items-center gap-4 hover:shadow-xs transition-all"
+                >
+                  <div className="w-12 h-12 rounded-xl flex items-center justify-center text-white font-bold text-sm flex-shrink-0 shadow-xs" style={{ background: btColor[donor.bloodType] }}>
+                    {donor.bloodType}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="font-semibold text-[#1A1A2E] dark:text-white text-sm truncate">{donor.name}</p>
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full flex-shrink-0 ${donor.eligible ? 'bg-[#EAFAF1] text-[#1E8449] dark:bg-[#0e2018]' : 'bg-[#F4F4F8] text-[#9B9BB5] dark:bg-[#1a1a2a]'}`}>
+                        {donor.eligible ? '✓ Siap' : '⏳ Tunggu'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-[#9B9BB5]">Donor terakhir: {new Date(donor.lastDonor).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}</p>
+                    <p className="text-xs text-[#4A4A6A] dark:text-[#a5a5c5]">{donor.phone} • {donor.totalDonations}× donor</p>
+                  </div>
+                  <button className={`p-2 rounded-lg transition-colors flex-shrink-0 ${donor.eligible ? 'bg-[#FDEDEC] text-[#C0392B] hover:bg-[#C0392B] hover:text-white dark:bg-[#2a1218]' : 'bg-[#F4F4F8] text-[#9B9BB5] dark:bg-[#1a1a2a] cursor-not-allowed'}`}
+                    disabled={!donor.eligible}>
+                    <Send className="w-4 h-4" />
+                  </button>
+                </motion.div>
+              ))}
+            </div>
+          </TabsContent>
+
+          {/* ── Tab: Kelola Driver ──────────────────────────── */}
+          <TabsContent value="drivers" className="space-y-4">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-border shadow-xs">
+              <div className="flex-1 max-w-md relative">
+                <Search className="w-4 h-4 text-[#9B9BB5] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="Cari nama, email, atau nomor kendaraan..."
+                  value={driverSearchQuery}
+                  onChange={e => setDriverSearchQuery(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 rounded-xl border border-border text-xs focus:outline-none focus:border-[#C0392B] transition-colors"
+                />
+              </div>
+              <button onClick={() => setShowAddDriverModal(true)}
+                className="bg-[#1ABC9C] hover:bg-[#16A085] text-white px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm shadow-teal-100">
+                <Plus className="w-4 h-4" /> Tambah Driver Baru
+              </button>
+              <button onClick={refreshDrivers}
+                title="Muat ulang daftar driver dari database"
+                className="p-2 rounded-xl border border-border text-[#4A4A6A] hover:bg-[#F4F4F8] transition-colors flex items-center gap-1.5 text-xs">
+                <RefreshCw className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Drivers list */}
+            {(() => {
+              const filteredDrivers = drivers.filter(d => 
+                (d.name?.toLowerCase() || '').includes(driverSearchQuery.toLowerCase()) ||
+                (d.email?.toLowerCase() || '').includes(driverSearchQuery.toLowerCase()) ||
+                (d.vehicleNo?.toLowerCase() || '').includes(driverSearchQuery.toLowerCase())
+              );
+
+              if (filteredDrivers.length === 0) {
+                return (
+                  <div className="bg-white rounded-2xl border border-border p-12 text-center">
+                    <p className="text-2xl mb-2">🚚</p>
+                    <p className="text-sm font-bold text-[#1A1A2E]">Driver tidak ditemukan</p>
+                    <p className="text-xs text-[#9B9BB5] mt-1">Coba sesuaikan kata kunci pencarian Anda atau tambah driver baru.</p>
+                  </div>
+                );
+              }
+
+              return (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {filteredDrivers.map(d => (
+                    <div key={d.id} className="bg-white rounded-2xl border border-border p-4 flex flex-col justify-between hover:shadow-md transition-all duration-250">
+                      <div className="flex items-start gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-[#E8F8F5] text-[#1ABC9C] flex items-center justify-center font-bold text-sm flex-shrink-0">
+                          {d.name.slice(0, 2).toUpperCase()}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-bold text-sm text-[#1A1A2E] truncate">{d.name}</p>
+                          <p className="text-xs text-[#9B9BB5] truncate">{d.email}</p>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 pt-3 border-t border-slate-100 flex flex-col gap-1.5 text-xs text-[#4A4A6A]">
+                        <p className="flex items-center gap-2">
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#1ABC9C]" />
+                          <strong>Kendaraan:</strong> <span className="bg-slate-100 px-1.5 py-0.5 rounded text-[10px] font-bold text-slate-800">{d.vehicleNo}</span>
+                        </p>
+                        <p className="flex items-center gap-2">
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#1ABC9C]" />
+                          <strong>Kontak:</strong> {d.phone || '081234567890'}
+                        </p>
+                        <p className="flex items-center gap-2 text-[10px] text-[#9B9BB5] truncate">
+                          <span className="w-1.5 h-1.5 rounded-full bg-slate-300" />
+                          Unit: {d.org}
+                        </p>
+                      </div>
+
+                      <div className="mt-4 flex justify-end gap-2">
+                        <button onClick={() => handleDeleteDriver(d.id)}
+                          className="p-1.5 rounded-lg border border-border hover:border-red-200 text-slate-400 hover:text-[#C0392B] hover:bg-red-50/50 transition-all flex items-center gap-1 text-xs">
+                          <Trash2 className="w-3.5 h-3.5" /> Hapus
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+          </TabsContent>
+
+          {/* ── Tab: Event Donor ─────────────────────────────── */}
+          <TabsContent value="events" className="space-y-4">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-border shadow-xs">
+              <div>
+                <h3 className="font-bold text-[#1A1A2E]" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>Event Donor Darah</h3>
+                <p className="text-xs text-[#9B9BB5] mt-0.5">{eventsList.length} event Anda</p>
+              </div>
+              <button
+                onClick={() => setShowAddEventModal(true)}
+                className="bg-[#C0392B] hover:bg-[#A93226] text-white px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm"
+              >
+                <Plus className="w-4 h-4" /> Buat Event Baru
+              </button>
+            </div>
+
+            {eventsList.length === 0 ? (
+              <div className="bg-white rounded-2xl border border-border p-12 text-center">
+                <p className="text-3xl mb-2">📅</p>
+                <p className="text-sm font-bold text-[#1A1A2E]">Belum ada event</p>
+                <p className="text-xs text-[#9B9BB5] mt-1">Klik "Buat Event Baru" untuk membuat event donor darah pertama Anda.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {eventsList.map(ev => (
+                  <div key={ev.id} className="bg-white rounded-2xl border border-border p-4 hover:shadow-md transition-all">
+                    <div className="flex items-start justify-between gap-2 mb-3">
+                      <div className="flex-1 min-w-0">
+                        <h4 className="font-bold text-sm text-[#1A1A2E] truncate">{ev.name}</h4>
+                        <p className="text-xs text-[#9B9BB5] mt-0.5 flex items-center gap-1">
+                          <MapPin className="w-3 h-3" />{ev.location}
+                        </p>
+                      </div>
+                      <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-[#EAFAF1] text-[#1E8449] whitespace-nowrap">✓ Open</span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs text-[#4A4A6A] mb-4">
+                      <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />{ev.date}</span>
+                      <span className="flex items-center gap-1"><Users className="w-3 h-3" />{ev.registered}/{ev.target} peserta</span>
+                    </div>
+                    <div className="pt-3 border-t border-slate-100 flex justify-end">
+                      <button
+                        onClick={() => handleDeleteEvent(ev.id)}
+                        className="p-1.5 rounded-lg border border-border hover:border-red-200 text-slate-400 hover:text-[#C0392B] hover:bg-red-50/50 transition-all flex items-center gap-1 text-xs"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" /> Hapus
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </TabsContent>
+          {/* ── Tab: Riwayat Stok (Audit Trail) ─────────────── */}
+          <TabsContent value="ledger" className="space-y-4">
+            <div className="bg-white rounded-2xl border border-border p-5 shadow-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-3">
+                <div>
+                  <h3 className="font-bold text-[#1A1A2E] text-sm">Riwayat Masuk & Keluar Stok Darah</h3>
+                  <p className="text-xs text-[#9B9BB5] mt-0.5">Setiap perubahan stok tercatat lengkap dengan pelaku dan waktu</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center bg-[#F4F4F8] rounded-xl p-1">
+                    <button onClick={() => setLedgerFilter('all')} className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${ledgerFilter === 'all' ? 'bg-white shadow-sm text-[#1A1A2E]' : 'text-[#9B9BB5] hover:text-[#4A4A6A]'}`}>Semua</button>
+                    <button onClick={() => setLedgerFilter('in')} className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1 ${ledgerFilter === 'in' ? 'bg-white shadow-sm text-green-600' : 'text-[#9B9BB5] hover:text-[#4A4A6A]'}`}>▲ Masuk</button>
+                    <button onClick={() => setLedgerFilter('out')} className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1 ${ledgerFilter === 'out' ? 'bg-white shadow-sm text-red-600' : 'text-[#9B9BB5] hover:text-[#4A4A6A]'}`}>▼ Keluar</button>
+                  </div>
+                  <button onClick={async () => {
+                    setIsLoadingLedger(true);
+                    try { const d = await api.stock.getLedger(); setLedger(Array.isArray(d) ? d : []); } catch {}
+                    finally { setIsLoadingLedger(false); }
+                  }} className="flex items-center gap-1.5 text-xs text-[#C0392B] font-semibold hover:underline">
+                    <RefreshCw className={`w-3.5 h-3.5 ${isLoadingLedger ? 'animate-spin' : ''}`} /> Refresh
+                  </button>
+                </div>
+              </div>
+              {isLoadingLedger ? (
+                <div className="py-10 text-center"><RefreshCw className="w-6 h-6 text-[#C0392B] animate-spin mx-auto" /></div>
+              ) : ledger.length === 0 ? (
+                <div className="py-10 text-center text-sm text-[#9B9BB5]">Belum ada riwayat stok tercatat.</div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-border text-[#4A4A6A] font-bold">
+                        <th className="py-2 text-left">Tanggal</th>
+                        <th className="py-2 text-left">Jenis</th>
+                        <th className="py-2 text-left">Gol. Darah</th>
+                        <th className="py-2 text-center">Jumlah</th>
+                        <th className="py-2 text-left">Keterangan</th>
+                        <th className="py-2 text-left">Dicatat Oleh</th>
+                        <th className="py-2 text-center">Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ledger.filter(entry => ledgerFilter === 'all' ? true : entry.direction === ledgerFilter).map((entry: any, idx: number) => (
+                        <motion.tr
+                          key={entry.id}
+                          initial={{ opacity: 0, x: -6 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ duration: 0.2, delay: idx * 0.03 }}
+                          className="border-b border-border/50 hover:bg-[#FDF0EE] dark:hover:bg-[#2a1218]/40 transition-colors"
+                        >
+                          <td className="py-2.5 text-[#4A4A6A] dark:text-[#a5a5c5]">{new Date(entry.recorded_at).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
+                          <td className="py-2.5">
+                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                              entry.direction === 'in' ? 'bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400' : 'bg-red-100 text-red-600 dark:bg-red-950/40 dark:text-red-400'
+                            }`}>
+                              {entry.direction === 'in' ? '▲ Masuk' : '▼ Keluar'}
+                            </span>
+                          </td>
+                          <td className="py-2.5 font-bold text-[#1A1A2E] dark:text-white">{entry.blood_type}</td>
+                          <td className="py-2.5 text-center font-bold text-[#1A1A2E] dark:text-white">{entry.quantity} ktg</td>
+                          <td className="py-2.5 text-[#4A4A6A] dark:text-[#a5a5c5] max-w-[180px]">
+                              <div className="truncate">{entry.reason_detail || entry.reason}</div>
+                              {entry.bag_codes && (
+                                <div className="text-[9px] font-mono text-[#9B9BB5] mt-0.5 truncate" title={typeof entry.bag_codes === 'string' ? JSON.parse(entry.bag_codes).join(', ') : entry.bag_codes.join(', ')}>
+                                  {typeof entry.bag_codes === 'string' ? JSON.parse(entry.bag_codes).join(', ') : entry.bag_codes.join(', ')}
+                                </div>
+                              )}
+                            </td>
+                          <td className="py-2.5 text-[#4A4A6A] dark:text-[#a5a5c5]">{entry.actor_name}</td>
+                          <td className="py-2.5 text-center">
+                            {entry.direction === 'in' && entry.bag_codes && (
+                              <button 
+                                onClick={() => {
+                                  let codes = [];
+                                  try { codes = typeof entry.bag_codes === 'string' ? JSON.parse(entry.bag_codes) : entry.bag_codes; } catch(e) {}
+                                  if (!Array.isArray(codes)) codes = [entry.bag_codes];
+                                  setPrintBagInfo({ bagCodes: codes, bloodType: entry.blood_type, expDate: entry.exp_date || '-', sourceName: entry.source_name || entry.source_type });
+                                  setShowPrintModal(true);
+                                }}
+                                className="text-blue-500 hover:text-blue-700 p-1.5 bg-blue-50 dark:bg-blue-950/40 hover:bg-blue-100 dark:hover:bg-blue-900/40 rounded transition-colors inline-block"
+                                title="Cetak Label Barcode"
+                              >
+                                <Printer className="w-4 h-4" />
+                              </button>
+                            )}
+                          </td>
+                        </motion.tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </TabsContent>
+
+          {/* ── Tab: Riwayat Broadcast Donor ─────────────────────── */}
+          <TabsContent value="broadcast" className="space-y-6">
+            {/* Menu Pengiriman Informasi ke Pendonor */}
+            <DonorBroadcastManager />
+
+            {/* Riwayat Broadcast & Follow-up Tambahan */}
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-white dark:bg-[#13131f] p-4 rounded-2xl border border-border shadow-xs">
+              <div>
+                <h3 className="font-bold text-[#1A1A2E] dark:text-white" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>Pusat Tanggapan & Follow-up Donor Darurat</h3>
+                <p className="text-xs text-[#9B9BB5] mt-0.5">Monitoring kesediaan pendonor dan tindak lanjut petugas PMI</p>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={async () => {
+                  setIsLoadingBroadcastLogs(true);
+                  try { const res: any = await api.notifications.listBroadcastLogs(); setBroadcastLogs(res?.logs && Array.isArray(res.logs) ? res.logs : []); }
+                  catch {} finally { setIsLoadingBroadcastLogs(false); }
+                }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#F4F4F8] text-xs font-semibold text-[#4A4A6A] hover:bg-[#E9E9F0] transition-colors">
+                  <RefreshCw className={`w-3.5 h-3.5 ${isLoadingBroadcastLogs ? 'animate-spin' : ''}`} /> Refresh
+                </button>
+                <button onClick={() => setShowBroadcastModal(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#C0392B] text-white text-xs font-bold hover:bg-[#A93226] transition-colors shadow-sm">
+                  <Megaphone className="w-3.5 h-3.5" /> Kirim Broadcast Baru
+                </button>
+              </div>
+            </div>
+
+            {isLoadingBroadcastLogs ? (
+              <div className="bg-white rounded-2xl border border-border p-10 text-center shadow-xs">
+                <Loader2 className="w-6 h-6 text-[#C0392B] animate-spin mx-auto" />
+                <p className="text-xs text-[#9B9BB5] mt-3">Memuat riwayat broadcast...</p>
+              </div>
+            ) : broadcastLogs.length === 0 ? (
+              <div className="bg-white rounded-2xl border border-border p-10 text-center shadow-xs">
+                <Megaphone className="w-10 h-10 text-[#D0D3DD] mx-auto mb-3" />
+                <p className="text-sm font-semibold text-[#4A4A6A]">Belum ada riwayat broadcast</p>
+                <p className="text-xs text-[#9B9BB5] mt-1">Kirim broadcast pertama untuk memanggil donor yang membutuhkan</p>
+                <button onClick={() => setShowBroadcastModal(true)} className="mt-4 px-4 py-2 rounded-xl bg-[#C0392B] text-white text-xs font-bold hover:bg-[#A93226] transition-colors inline-flex items-center gap-1.5">
+                  <Send className="w-3.5 h-3.5" /> Mulai Broadcast Pertama
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {broadcastLogs.map((log: any) => {
+                  const isExpanded = expandedBroadcastLog === log.id;
+                  const respCount = Number(log.response_count ?? 0);
+                  const willingCount = Array.isArray(log.responses) ? log.responses.filter((r:any) => r.status === 'willing').length : respCount;
+                  const urgencyColor: Record<string, string> = {
+                    'routine': 'bg-blue-100 text-blue-700 border-blue-200',
+                    'urgent': 'bg-orange-100 text-orange-700 border-orange-200',
+                    'code-red': 'bg-red-100 text-red-700 border-red-200'
+                  };
+                  const urgencyLabel: Record<string, string> = {
+                    'routine': 'Rutin', 'urgent': 'Urgent', 'code-red': 'Code Red'
+                  };
+                  return (
+                    <div key={log.id} className="bg-white rounded-2xl border border-border shadow-xs overflow-hidden">
+                      {/* Header Broadcast Log */}
+                      <div className="p-4 cursor-pointer hover:bg-[#FDF0EE]/30 transition-colors" onClick={() => setExpandedBroadcastLog(isExpanded ? null : log.id)}>
+                        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] font-bold ${urgencyColor[log.urgency_level] || 'bg-gray-100 text-gray-700 border-gray-200'}`}>
+                                {urgencyLabel[log.urgency_level] || log.urgency_level || 'Info'}
+                              </span>
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-[#1A1A2E]/10 text-[#1A1A2E] text-[10px] font-bold">
+                                Gol. {log.blood_type || 'Semua'}
+                              </span>
+                              {log.radius_km > 0 && (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-[10px] font-bold">
+                                  <MapPin className="w-3 h-3 mr-0.5" /> {log.radius_km} KM
+                                </span>
+                              )}
+                            </div>
+                            <h4 className="font-bold text-[#1A1A2E] text-sm mt-2">{log.title}</h4>
+                            <p className="text-xs text-[#4A4A6A] mt-0.5 line-clamp-2">{log.message}</p>
+                            <div className="flex items-center gap-3 mt-2 text-[10px] text-[#9B9BB5] flex-wrap">
+                              <span className="inline-flex items-center gap-1">
+                                <Users className="w-3 h-3" /> Dikirim ke <b className="text-[#4A4A6A]">{log.donor_sent ?? 0}</b> / {log.donor_total_candidates ?? 0} donor
+                              </span>
+                              <span className="inline-flex items-center gap-1">
+                                <CheckCircle className="w-3 h-3 text-green-600" /> Lolos eligibilitas <b className="text-[#4A4A6A]">{log.donor_eligibility_passed ?? 0}</b>
+                              </span>
+                              <span className="inline-flex items-center gap-1">
+                                <Heart className="w-3 h-3 text-[#C0392B]" /> Menyatakan bersedia <b className="text-[#C0392B]">{willingCount}</b>
+                              </span>
+                            </div>
+                          </div>
+                          <div className="flex items-start gap-3 shrink-0">
+                            <div className="text-right">
+                              <p className="text-[10px] text-[#9B9BB5]">{log.org_name || log.broadcaster_name || '-'}</p>
+                              <p className="text-[10px] text-[#4A4A6A] font-semibold mt-0.5">{new Date(log.created_at).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
+                              {respCount > 0 && (
+                                <Badge className="mt-1.5 !bg-[#C0392B] !text-white !text-[10px] !border-0">{respCount} tanggapan</Badge>
+                              )}
+                            </div>
+                            <ChevronDown className={`w-4 h-4 text-[#9B9BB5] transition-transform shrink-0 mt-1 ${isExpanded ? 'rotate-180' : ''}`} />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Detail Tanggapan Donor (Expandable) */}
+                      {isExpanded && (
+                        <div className="border-t border-border bg-[#FAFAFC] p-4 space-y-3">
+                          {!Array.isArray(log.responses) || log.responses.length === 0 ? (
+                            <div className="py-6 text-center">
+                              <Users className="w-8 h-8 text-[#D0D3DD] mx-auto mb-2" />
+                              <p className="text-xs text-[#9B9BB5]">Belum ada donor yang menyatakan bersedia untuk broadcast ini</p>
+                              <p className="text-[10px] text-[#BFC3D0] mt-1">Donor akan muncul di sini setelah mereka klik "Saya bersedia donor" di notifikasi</p>
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              <div className="text-[10px] text-[#9B9BB5] font-semibold px-1 uppercase tracking-wide">Daftar Donor yang Menyatakan Bersedia ({log.responses.length})</div>
+                              {log.responses.map((resp: any, idx: number) => {
+                                const rid = resp.id || `${log.id}-${idx}`;
+                                const statusColor: Record<string, string> = {
+                                  'new': 'bg-blue-50 text-blue-700 border-blue-200',
+                                  'contacted': 'bg-yellow-50 text-yellow-700 border-yellow-200',
+                                  'scheduled': 'bg-purple-50 text-purple-700 border-purple-200',
+                                  'arrived': 'bg-emerald-50 text-emerald-700 border-emerald-200',
+                                  'completed': 'bg-green-100 text-green-700 border-green-200',
+                                  'cancelled': 'bg-gray-100 text-gray-600 border-gray-200'
+                                };
+                                const statusLabel: Record<string, string> = {
+                                  'new': 'Baru', 'contacted': 'Sudah Dihubungi', 'scheduled': 'Dijadwalkan',
+                                  'arrived': 'Sudah Datang', 'completed': 'Selesai Donor', 'cancelled': 'Batal'
+                                };
+                                const currentInput = followupInputMap[rid] || { status: resp.follow_up_status || 'contacted', notes: '' };
+                                const isMyResp = isSubmittingFollowup === rid;
+                                return (
+                                  <div key={rid} className="bg-white rounded-xl border border-border p-3 hover:border-[#C0392B]/30 transition-colors">
+                                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                                      <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                          <p className="font-bold text-[#1A1A2E] text-sm">{resp.donor_name || 'Donor #' + (idx+1)}</p>
+                                          {resp.blood_type && (
+                                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold text-white" style={{background: (btColor as any)[resp.blood_type] || '#C0392B'}}>
+                                              {resp.blood_type}
+                                            </span>
+                                          )}
+                                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full border text-[10px] font-semibold ${statusColor[resp.follow_up_status] || statusColor['new']}`}>
+                                            Follow-up: {statusLabel[resp.follow_up_status] || resp.follow_up_status || 'Baru'}
+                                          </span>
+                                        </div>
+                                        <div className="flex items-center gap-3 mt-1 text-[11px] text-[#4A4A6A] flex-wrap">
+                                          {resp.donor_phone && (
+                                            <a href={`tel:${resp.donor_phone}`} className="inline-flex items-center gap-1 hover:text-[#C0392B] font-semibold">
+                                              <Phone className="w-3 h-3" /> {resp.donor_phone}
+                                            </a>
+                                          )}
+                                          {resp.created_at && (
+                                            <span className="inline-flex items-center gap-1 text-[#9B9BB5]">
+                                              <Clock className="w-3 h-3" /> {new Date(resp.created_at).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                                            </span>
+                                          )}
+                                        </div>
+                                        {resp.donor_message && (
+                                          <div className="mt-2 p-2 bg-[#F4F4F8] rounded-lg">
+                                            <p className="text-[11px] text-[#4A4A6A] italic">"{resp.donor_message}"</p>
+                                          </div>
+                                        )}
+                                        {resp.follow_up_notes && (
+                                          <div className="mt-2">
+                                            <p className="text-[10px] font-semibold text-[#9B9BB5] uppercase tracking-wide mb-1">Riwayat Catatan:</p>
+                                            <pre className="text-[10px] text-[#4A4A6A] bg-[#FFF8E1] border border-yellow-100 rounded-md p-2 whitespace-pre-wrap font-sans leading-relaxed">{resp.follow_up_notes}</pre>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                    {/* Form Follow-up Input */}
+                                    <div className="mt-3 pt-3 border-t border-dashed border-border space-y-2">
+                                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                                        <select
+                                          value={currentInput.status}
+                                          onChange={(e) => setFollowupInputMap(prev => ({...prev, [rid]: {...(prev[rid] || {notes:''}), status: e.target.value}}))}
+                                          className="col-span-1 px-2.5 py-1.5 rounded-lg border border-border text-[11px] focus:outline-none focus:border-[#C0392B] bg-white"
+                                        >
+                                          {Object.entries(statusLabel).map(([k, v]) => (
+                                            <option key={k} value={k}>{v}</option>
+                                          ))}
+                                        </select>
+                                        <input
+                                          type="text"
+                                          placeholder="Catatan follow-up (misal: sudah dihubungi, janji jam 10 besok)"
+                                          value={currentInput.notes}
+                                          onChange={(e) => setFollowupInputMap(prev => ({...prev, [rid]: {...(prev[rid] || {status:'contacted'}), notes: e.target.value}}))}
+                                          className="col-span-1 sm:col-span-1 px-2.5 py-1.5 rounded-lg border border-border text-[11px] focus:outline-none focus:border-[#C0392B]"
+                                        />
+                                        <button
+                                          onClick={() => handleFollowupSubmit(rid)}
+                                          disabled={isMyResp}
+                                          className="col-span-1 px-3 py-1.5 rounded-lg bg-[#1A1A2E] text-white text-[11px] font-bold hover:bg-[#2D2D44] disabled:opacity-60 transition-colors inline-flex items-center justify-center gap-1"
+                                        >
+                                          {isMyResp ? (<><Loader2 className="w-3 h-3 animate-spin" /> Menyimpan...</>) : (<><Save className="w-3 h-3" /> Simpan Follow-up</>)}
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </TabsContent>
+        </Tabs>
+      </div>
+
+      {/* ── Modal: Buat Event ─────────────────────────────── */}
+      {showAddEventModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl">
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <h3 className="font-bold text-[#1A1A2E]" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>Buat Event Donor Baru</h3>
+                <p className="text-xs text-[#9B9BB5] mt-0.5">Event akan langsung tampil di halaman donor</p>
+              </div>
+              <button onClick={() => { setShowAddEventModal(false); setEventErrors({}); }} className="p-1.5 rounded-lg text-[#9B9BB5] hover:bg-[#F4F4F8] transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <form onSubmit={handleCreateEvent} className="space-y-4" noValidate>
+              <div>
+                <label className="text-xs font-semibold text-[#4A4A6A] block mb-1">Nama Event <span className="text-[#C0392B]">*</span></label>
+                <input
+                  type="text" placeholder="Contoh: Donor Darah Hari Pahlawan"
+                  value={newEventName} onChange={e => { setNewEventName(e.target.value); setEventErrors(prev => ({...prev, name: ''})); }}
+                  className={`w-full px-3 py-2.5 rounded-xl border text-sm focus:outline-none transition-colors ${
+                    eventErrors.name ? 'border-red-400 bg-red-50 focus:border-red-500' : 'border-border focus:border-[#C0392B]'
+                  }`}
+                />
+                {eventErrors.name && <p className="text-[10px] text-red-500 mt-1 flex items-center gap-1">⚠ {eventErrors.name}</p>}
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-semibold text-[#4A4A6A] block mb-1">Tanggal <span className="text-[#C0392B]">*</span></label>
+                  <input
+                    type="date" value={newEventDate}
+                    min={new Date().toISOString().split('T')[0]}
+                    onChange={e => { setNewEventDate(e.target.value); setEventErrors(prev => ({...prev, date: ''})); }}
+                    className={`w-full px-3 py-2.5 rounded-xl border text-sm focus:outline-none transition-colors ${
+                      eventErrors.date ? 'border-red-400 bg-red-50 focus:border-red-500' : 'border-border focus:border-[#C0392B]'
+                    }`}
+                  />
+                  {eventErrors.date && <p className="text-[10px] text-red-500 mt-1 flex items-center gap-1">⚠ {eventErrors.date}</p>}
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-[#4A4A6A] block mb-1">Waktu</label>
+                  <input
+                    type="time" value={newEventTime} onChange={e => setNewEventTime(e.target.value)}
+                    className="w-full px-3 py-2.5 rounded-xl border border-border text-sm focus:outline-none focus:border-[#C0392B] transition-colors"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-[#4A4A6A] block mb-1">Lokasi <span className="text-[#C0392B]">*</span></label>
+                <input
+                  type="text" placeholder="Contoh: Mall Grand Indonesia"
+                  value={newEventLocation} onChange={e => { setNewEventLocation(e.target.value); setEventErrors(prev => ({...prev, location: ''})); }}
+                  className={`w-full px-3 py-2.5 rounded-xl border text-sm focus:outline-none transition-colors ${
+                    eventErrors.location ? 'border-red-400 bg-red-50 focus:border-red-500' : 'border-border focus:border-[#C0392B]'
+                  }`}
+                />
+                {eventErrors.location && <p className="text-[10px] text-red-500 mt-1 flex items-center gap-1">⚠ {eventErrors.location}</p>}
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-[#4A4A6A] block mb-1">Kapasitas Peserta</label>
+                <input
+                  type="number" min={1} value={newEventCapacity}
+                  onChange={e => { setNewEventCapacity(Number(e.target.value)); setEventErrors(prev => ({...prev, capacity: ''})); }}
+                  className={`w-full px-3 py-2.5 rounded-xl border text-sm focus:outline-none transition-colors ${
+                    eventErrors.capacity ? 'border-red-400 bg-red-50 focus:border-red-500' : 'border-border focus:border-[#C0392B]'
+                  }`}
+                />
+                {eventErrors.capacity && <p className="text-[10px] text-red-500 mt-1 flex items-center gap-1">⚠ {eventErrors.capacity}</p>}
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-[#4A4A6A] block mb-1">Deskripsi (opsional)</label>
+                <textarea
+                  rows={2} placeholder="Deskripsi singkat event..."
+                  value={newEventDescription} onChange={e => setNewEventDescription(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-xl border border-border text-sm focus:outline-none focus:border-[#C0392B] transition-colors resize-none"
+                />
+              </div>
+              <div className="flex gap-3 pt-2">
+                <button type="button" onClick={() => { setShowAddEventModal(false); setEventErrors({}); }}
+                  className="flex-1 py-2.5 rounded-xl border border-border text-sm text-[#4A4A6A] hover:bg-[#F4F4F8] transition-colors">
+                  Batal
+                </button>
+                <button type="submit"
+                  className="flex-1 py-2.5 rounded-xl bg-[#C0392B] text-white text-sm font-bold hover:bg-[#A93226] transition-colors">
+                  Buat Event
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Broadcast Modal ─────────────────────────────────── */}
+      {showBroadcastModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl my-8">
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <h3 className="font-bold text-[#1A1A2E]" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>Broadcast Donor Darurat</h3>
+                <p className="text-xs text-[#9B9BB5] mt-0.5">Kirim notifikasi ke donor yang lolos eligibility screening</p>
+              </div>
+              <button onClick={() => setShowBroadcastModal(false)} className="p-1.5 rounded-lg text-[#9B9BB5] hover:bg-[#F4F4F8] transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {/* 1. Golongan Darah */}
+              <div>
+                <label className="text-xs font-semibold text-[#4A4A6A] block mb-2">Golongan Darah yang Dibutuhkan</label>
+                <div className="flex flex-wrap gap-2">
+                  {['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-', 'Semua'].map(bt => (
+                    <button key={bt} onClick={() => setBroadcastType(bt)}
+                      className={`px-3 py-1.5 rounded-lg text-sm font-bold transition-colors ${broadcastType === bt ? 'text-white' : 'border border-border text-[#4A4A6A]'}`}
+                      style={broadcastType === bt ? { background: bt === 'Semua' ? '#1A1A2E' : (btColor[bt] || '#C0392B') } : {}}>
+                      {bt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 2. Pesan Broadcast */}
+              <div>
+                <label className="text-xs font-semibold text-[#4A4A6A] block mb-2">Pesan Broadcast <span className="text-[#9B9BB5] font-normal">(opsional)</span></label>
+                <textarea
+                  value={broadcastMsg}
+                  onChange={e => setBroadcastMsg(e.target.value)}
+                  placeholder={`Halo, PMI membutuhkan donor darah golongan ${broadcastType} segera. Stok kami sangat kritis. Harap segera hubungi kami.`}
+                  className="w-full p-3 rounded-xl border border-border text-sm focus:outline-none focus:border-[#C0392B] transition-colors resize-none"
+                  rows={4}
+                />
+              </div>
+
+              {/* 3. Level Urgensi (OPSIONAL — jika tidak dipilih, pakai default role PMI = Routine) */}
+              <div className="pt-2 border-t border-border/50">
+                <label className="text-xs font-semibold text-[#4A4A6A] block mb-2">
+                  Tingkat Urgensi <span className="text-[#9B9BB5] font-normal">(opsional, kosongkan untuk default)</span>
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    { v: '', label: 'Default', sub: 'Routine', color: 'text-[#4A4A6A]', active: 'bg-[#4A4A6A] text-white' },
+                    { v: 'routine', label: 'Rutin', sub: 'Pengadaan biasa', color: 'text-blue-700 border-blue-200', active: 'bg-blue-600 text-white border-blue-600' },
+                    { v: 'urgent', label: 'Urgent', sub: 'Stok < 2 hari', color: 'text-orange-700 border-orange-200', active: 'bg-orange-500 text-white border-orange-500' },
+                    { v: 'code-red', label: 'Code Red', sub: 'Kedaruratan massal', color: 'text-red-700 border-red-200', active: 'bg-[#C0392B] text-white border-[#C0392B]' },
+                  ] as const).map(({v, label, sub, color, active}) => (
+                    <button key={v} onClick={() => setBroadcastUrgency(v)}
+                      className={`px-2 py-2 rounded-lg border text-[10px] font-bold transition-colors flex flex-col items-center gap-0.5 ${broadcastUrgency === v ? active : `bg-white ${color}`}`}>
+                      <span className="text-xs">{label}</span>
+                      <span className={`font-normal ${broadcastUrgency === v ? 'opacity-80' : 'text-[#9B9BB5]'}`}>{sub}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 3b. Code Red Reason (HANYA MUNCUL jika user pilih Code Red) */}
+              {broadcastUrgency === 'code-red' && (
+                <div className="bg-[#FDEDEC] border border-[#F5B7B1] rounded-xl p-3 space-y-2">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 text-[#C0392B] shrink-0 mt-0.5" />
+                    <p className="text-[10px] text-[#C0392B] leading-relaxed">Untuk level <b>Code Red</b> (kedokteran gawat darurat / bencana massal), <b>WAJIB</b> mengisi alasan minimal 10 karakter. Misal: "Operasi jantung massal di RSCM", "Bencana longsor membutuhkan 50 donor O-"</p>
+                  </div>
+                  <textarea
+                    value={broadcastCodeRedReason}
+                    onChange={e => setBroadcastCodeRedReason(e.target.value)}
+                    placeholder="Contoh: Bencana banjir di wilayah X membutuhkan 30 donor darah golongan O+ untuk korban luka."
+                    rows={2}
+                    className="w-full p-2.5 rounded-lg border border-[#F5B7B1] text-[11px] bg-white focus:outline-none focus:border-[#C0392B] resize-none"
+                  />
+                </div>
+              )}
+
+              {/* 4. Radius Geo + Lokasi Saya (OPSIONAL) */}
+              <div className="pt-2 border-t border-border/50 space-y-3">
+                <label className="text-xs font-semibold text-[#4A4A6A] block">
+                  Filter Radius & Lokasi <span className="text-[#9B9BB5] font-normal">(opsional)</span>
+                </label>
+                <div className="flex items-center gap-3">
+                  <div className="flex-1">
+                    <label className="text-[10px] text-[#9B9BB5] block mb-1">Radius (KM)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={500}
+                      value={broadcastRadiusKm}
+                      onChange={e => setBroadcastRadiusKm(e.target.value === '' ? '' : Math.max(1, Math.min(500, Number(e.target.value) || 0)))}
+                      placeholder="(kosong = seluruh Indonesia)"
+                      className="w-full px-3 py-2 rounded-xl border border-border text-xs focus:outline-none focus:border-[#C0392B]"
+                      inputMode="numeric"
+                    />
+                  </div>
+                  <label className="flex items-center gap-1.5 cursor-pointer select-none mt-5">
+                    <input
+                      type="checkbox"
+                      checked={broadcastUseMyLocation}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setBroadcastUseMyLocation(checked);
+                        if (checked) {
+                          // Isi otomatis koordinat user jika ada
+                          const lat = (user as any)?.latitude || (user as any)?.lat;
+                          const lng = (user as any)?.longitude || (user as any)?.lng;
+                          if (lat) setBroadcastLat(Number(lat));
+                          if (lng) setBroadcastLng(Number(lng));
+                        }
+                      }}
+                      className="w-3.5 h-3.5 accent-[#C0392B]"
+                    />
+                    <span className="text-[11px] text-[#4A4A6A] font-semibold flex items-center gap-1">
+                      <MapPin className="w-3 h-3" /> Pakai Lokasi Saya
+                    </span>
+                  </label>
+                </div>
+                {broadcastRadiusKm !== '' && broadcastUseMyLocation && ((broadcastLat === '' || broadcastLng === '') && !((user as any)?.latitude || (user as any)?.lat)) && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      type="number"
+                      step="any"
+                      value={broadcastLat}
+                      onChange={e => setBroadcastLat(e.target.value === '' ? '' : Number(e.target.value))}
+                      placeholder="Latitude (contoh: -6.2088)"
+                      className="w-full px-3 py-2 rounded-xl border border-border text-[10px] focus:outline-none focus:border-[#C0392B]"
+                    />
+                    <input
+                      type="number"
+                      step="any"
+                      value={broadcastLng}
+                      onChange={e => setBroadcastLng(e.target.value === '' ? '' : Number(e.target.value))}
+                      placeholder="Longitude (contoh: 106.8456)"
+                      className="w-full px-3 py-2 rounded-xl border border-border text-[10px] focus:outline-none focus:border-[#C0392B]"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* 5. Estimasi Jumlah Donor ELIGIBLE (AKURAT via Backend Preview) */}
+              <div className="bg-[#EAF7FB] rounded-xl p-3 space-y-1 border border-[#D4E6F1]">
+                <div className="flex items-center gap-2">
+                  {isLoadingPreview ? (
+                    <Loader2 className="w-4 h-4 text-[#2980B9] animate-spin shrink-0" />
+                  ) : (
+                    <Users className="w-4 h-4 text-[#2980B9] shrink-0" />
+                  )}
+                  <p className="text-xs text-[#2980B9]">
+                    {isLoadingPreview ? (
+                      <span>Menghitung donor eligible...</span>
+                    ) : (
+                      <>
+                        <span className="font-bold text-[13px]">{previewDonor.eligible} donor</span> <span className="font-semibold">lolos screening</span> golongan {broadcastType}
+                      </>
+                    )}
+                  </p>
+                </div>
+                {!isLoadingPreview && (previewDonor.registered_total > 0 || previewDonor.filtered_out > 0) && (
+                  <div className="flex items-center gap-3 text-[10px] text-[#2471A3] ml-6 flex-wrap">
+                    {previewDonor.registered_total > 0 && (
+                      <span>Total terdaftar: <b>{previewDonor.registered_total}</b></span>
+                    )}
+                    {previewDonor.filtered_out > 0 && (
+                      <span>Tidak lolos (recovery/BB/usia/spam): <b>{previewDonor.filtered_out}</b></span>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* 6. Tombol Submit */}
+              <button onClick={handleBroadcast}
+                disabled={isBroadcasting || broadcastSent || (broadcastUrgency === 'code-red' && broadcastCodeRedReason.trim().length < 10)}
+                className="w-full py-3 rounded-xl bg-[#C0392B] text-white font-semibold text-sm hover:bg-[#922B21] disabled:opacity-60 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2 shadow-md">
+                {broadcastSent ? (
+                  <><CheckCircle className="w-4 h-4" /> Broadcast Terkirim!</>
+                ) : isBroadcasting ? (
+                  <><Loader2 className="w-4 h-4 animate-spin" /> Mengirim...</>
+                ) : (
+                  <><Send className="w-4 h-4" /> Kirim Broadcast</>
+                )}
+              </button>
+              {broadcastUrgency === 'code-red' && broadcastCodeRedReason.trim().length < 10 && (
+                <p className="text-[10px] text-[#C0392B] text-center -mt-1">Alasan Code Red minimal 10 karakter (saat ini {broadcastCodeRedReason.trim().length})</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      {/* ── Add Driver Modal ───────────────────────────────── */}
+      {showAddDriverModal && (
+        <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl border border-border">
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <h3 className="font-bold text-[#1A1A2E]" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>Tambah Driver Baru</h3>
+                <p className="text-xs text-[#9B9BB5] mt-0.5">Daftarkan akun driver dan plat nomor kurir</p>
+              </div>
+              <button onClick={() => setShowAddDriverModal(false)} className="p-1.5 rounded-lg text-[#9B9BB5] hover:bg-[#F4F4F8] transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleAddDriver} className="space-y-3" noValidate>
+              {/* Nama */}
+              <div>
+                <label className="text-xs font-semibold text-[#4A4A6A] block mb-1">Nama Lengkap <span className="text-[#C0392B]">*</span></label>
+                <input
+                  type="text"
+                  placeholder="Contoh: Budi Santoso"
+                  value={newDriverName}
+                  onChange={e => { setNewDriverName(e.target.value); setDriverErrors(prev => ({...prev, name: ''})); }}
+                  className={`w-full p-2.5 rounded-xl border text-xs focus:outline-none transition-colors ${
+                    driverErrors.name ? 'border-red-400 bg-red-50 focus:border-red-500' : 'border-border focus:border-[#C0392B]'
+                  }`}
+                />
+                {driverErrors.name && <p className="text-[10px] text-red-500 mt-1 flex items-center gap-1">⚠ {driverErrors.name}</p>}
+              </div>
+
+              {/* Email */}
+              <div>
+                <label className="text-xs font-semibold text-[#4A4A6A] block mb-1">Email Aktif (Untuk Login) <span className="text-[#C0392B]">*</span></label>
+                <input
+                  type="text"
+                  placeholder="Contoh: budi@kurir.id"
+                  value={newDriverEmail}
+                  onChange={e => { setNewDriverEmail(e.target.value); setDriverErrors(prev => ({...prev, email: ''})); }}
+                  className={`w-full p-2.5 rounded-xl border text-xs focus:outline-none transition-colors ${
+                    driverErrors.email ? 'border-red-400 bg-red-50 focus:border-red-500' : 'border-border focus:border-[#C0392B]'
+                  }`}
+                />
+                {driverErrors.email && <p className="text-[10px] text-red-500 mt-1 flex items-center gap-1">⚠ {driverErrors.email}</p>}
+              </div>
+
+              {/* Password */}
+              <div>
+                <label className="text-xs font-semibold text-[#4A4A6A] block mb-1">Password Akun Driver <span className="text-[#C0392B]">*</span></label>
+                <input
+                  type="password"
+                  placeholder="Minimal 6 karakter"
+                  value={newDriverPassword}
+                  onChange={e => { setNewDriverPassword(e.target.value); setDriverErrors(prev => ({...prev, password: ''})); }}
+                  className={`w-full p-2.5 rounded-xl border text-xs focus:outline-none transition-colors ${
+                    driverErrors.password ? 'border-red-400 bg-red-50 focus:border-red-500' : 'border-border focus:border-[#C0392B]'
+                  }`}
+                />
+                {driverErrors.password && <p className="text-[10px] text-red-500 mt-1 flex items-center gap-1">⚠ {driverErrors.password}</p>}
+              </div>
+
+              {/* Telepon */}
+              <div>
+                <label className="text-xs font-semibold text-[#4A4A6A] block mb-1">Nomor Telepon</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="Contoh: 081234567890"
+                  value={newDriverPhone}
+                  onChange={e => { setNewDriverPhone(e.target.value.replace(/[^0-9+\-() ]/g, '')); setDriverErrors(prev => ({...prev, phone: ''})); }}
+                  className={`w-full p-2.5 rounded-xl border text-xs focus:outline-none transition-colors ${
+                    driverErrors.phone ? 'border-red-400 bg-red-50 focus:border-red-500' : 'border-border focus:border-[#C0392B]'
+                  }`}
+                />
+                {driverErrors.phone && <p className="text-[10px] text-red-500 mt-1 flex items-center gap-1">⚠ {driverErrors.phone}</p>}
+              </div>
+
+              {/* Plat */}
+              <div>
+                <label className="text-xs font-semibold text-[#4A4A6A] block mb-1">Nomor Kendaraan (Plat Nomor)</label>
+                <input
+                  type="text"
+                  placeholder="Contoh: L 1234 AB"
+                  value={newDriverVehicle}
+                  onChange={e => { setNewDriverVehicle(e.target.value.toUpperCase()); setDriverErrors(prev => ({...prev, vehicle: ''})); }}
+                  className={`w-full p-2.5 rounded-xl border text-xs focus:outline-none transition-colors ${
+                    driverErrors.vehicle ? 'border-red-400 bg-red-50 focus:border-red-500' : 'border-border focus:border-[#C0392B]'
+                  }`}
+                />
+                {driverErrors.vehicle && <p className="text-[10px] text-red-500 mt-1 flex items-center gap-1">⚠ {driverErrors.vehicle}</p>}
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button type="button" onClick={() => { setShowAddDriverModal(false); setDriverErrors({}); }}
+                  className="flex-1 py-2.5 rounded-xl border border-border text-xs font-bold text-[#4A4A6A] hover:bg-[#F4F4F8] transition-colors">
+                  Batal
+                </button>
+                <button type="submit"
+                  disabled={isSubmittingDriver}
+                  className={`flex-1 py-2.5 rounded-xl text-white text-xs font-bold transition-colors flex items-center justify-center gap-1.5 ${
+                    isSubmittingDriver ? 'bg-[#1ABC9C]/50 cursor-not-allowed' : 'bg-[#1ABC9C] hover:bg-[#16A085]'
+                  }`}>
+                  {isSubmittingDriver ? (
+                    <><svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg> Menyimpan...</>
+                  ) : 'Simpan Driver'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {/* ── Assign Blood Bags Modal (Traceability) ───────────────────── */}
+      {assigningBagsRequestId && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-xl border border-border">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="font-bold text-[#1A1A2E]" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>Pilih Kantong Darah</h3>
+                <p className="text-xs text-[#9B9BB5] mt-0.5">Pilih fisik kantong darah untuk dilacak (Traceability)</p>
+              </div>
+              <button onClick={() => setAssigningBagsRequestId(null)} className="p-1.5 rounded-lg text-[#9B9BB5] hover:bg-[#F4F4F8] transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {(() => {
+              const req = requests.find(r => r.id === assigningBagsRequestId);
+              if (!req) return null;
+              
+              const bloodStock = stocks.find(s => s.type === req.bloodType);
+              
+              // Ekstrak list semua individual bag codes dari batches
+              const availableBagCodes: { code: string; exp: string; source: string }[] = [];
+              if (bloodStock?.batches) {
+                bloodStock.batches.forEach(b => {
+                  if (b.codes) {
+                    b.codes.forEach(code => {
+                      availableBagCodes.push({ code, exp: b.expDate, source: b.sourceName || 'Donasi' });
+                    });
+                  }
+                });
+              }
+
+              const handleToggleBag = (code: string) => {
+                setSelectedBagCodes(prev => 
+                  prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]
+                );
+              };
+
+              const isValidSelection = selectedBagCodes.length === req.qty;
+
+              return (
+                <div className="space-y-4">
+                  <div className="bg-[#F8F9FA] rounded-2xl p-4 border border-dashed border-[#BDC3C7]">
+                    <div className="flex justify-between items-center mb-2">
+                      <p className="text-xs font-bold text-[#1A1A2E]">Pesanan dari {req.hospital}</p>
+                      <span className="text-[10px] px-2 py-1 bg-[#E8F8F5] text-[#16A085] rounded-full font-bold">Butuh {req.qty} Kantong</span>
+                    </div>
+                    <p className="text-[10px] text-[#4A4A6A]">Golongan Darah: <strong className="text-[#C0392B] text-xs">{req.bloodType}</strong></p>
+                    
+                    <div className="mt-2 text-xs font-medium text-[#1A1A2E]">
+                      Terpilih: <span className={selectedBagCodes.length === req.qty ? 'text-[#27AE60] font-bold' : 'text-[#E67E22] font-bold'}>{selectedBagCodes.length}</span> / {req.qty}
+                    </div>
+                  </div>
+
+                  <div className="max-h-60 overflow-y-auto space-y-2 pr-1 pb-1">
+                    {availableBagCodes.length === 0 ? (
+                      <div className="text-center py-6 border-2 border-dashed border-border rounded-xl">
+                        <p className="text-xs text-[#9B9BB5]">Tidak ada data barcode kantong darah tersedia di inventaris untuk golongan ini.</p>
+                      </div>
+                    ) : (
+                      availableBagCodes.map(bag => (
+                        <label key={bag.code} className={`flex items-center gap-3 p-3 rounded-xl border-2 cursor-pointer transition-all ${selectedBagCodes.includes(bag.code) ? 'border-[#1ABC9C] bg-[#E8F8F5]/30' : 'border-border hover:border-slate-300'}`}>
+                          <input
+                            type="checkbox"
+                            checked={selectedBagCodes.includes(bag.code)}
+                            onChange={() => handleToggleBag(bag.code)}
+                            disabled={!selectedBagCodes.includes(bag.code) && selectedBagCodes.length >= req.qty}
+                            className="text-[#1ABC9C] focus:ring-[#1ABC9C] rounded"
+                          />
+                          <div className="flex-1">
+                            <p className="text-xs font-bold text-[#1A1A2E] font-mono">{bag.code}</p>
+                            <div className="flex justify-between items-center mt-0.5 text-[10px] text-[#9B9BB5]">
+                              <span>Exp: {bag.exp}</span>
+                              <span>{bag.source}</span>
+                            </div>
+                          </div>
+                        </label>
+                      ))
+                    )}
+                  </div>
+
+                  <div className="flex gap-2 pt-2 border-t border-slate-100">
+                    <button type="button" onClick={() => setAssigningBagsRequestId(null)}
+                      className="flex-1 py-2.5 rounded-xl border border-border text-xs font-bold text-[#4A4A6A] hover:bg-[#F4F4F8] transition-colors">
+                      Batal
+                    </button>
+                    <button type="button" onClick={() => {
+                        setApprovingRequestId(req.id);
+                        setAssigningBagsRequestId(null);
+                        if (drivers.length > 0) setChosenDriverId(drivers[0].id);
+                      }} disabled={!isValidSelection}
+                      className={`flex-1 py-2.5 rounded-xl text-white text-xs font-bold transition-colors ${!isValidSelection ? 'bg-[#BDC3C7] cursor-not-allowed' : 'bg-[#1ABC9C] hover:bg-[#16A085]'}`}>
+                      Lanjut Pilih Driver →
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+
+      {/* ── Assign Driver & Approve Modal ───────────────────── */}
+      {approvingRequestId && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl border border-border">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="font-bold text-[#1A1A2E]" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>Persetujuan Permintaan</h3>
+                <p className="text-xs text-[#9B9BB5] mt-0.5">Pilih driver yang akan ditugaskan mengirim darah</p>
+              </div>
+              <button onClick={() => setApprovingRequestId(null)} className="p-1.5 rounded-lg text-[#9B9BB5] hover:bg-[#F4F4F8] transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {(() => {
+              const req = displayedRequests.find(r => r.id === approvingRequestId);
+              if (!req) return null;
+
+              return (
+                <div className="space-y-4">
+                  {/* Request details info block */}
+                  <div className="bg-slate-50 border border-slate-100 rounded-xl p-3 text-xs space-y-1.5">
+                    <p className="text-[#4A4A6A]"><strong>Instansi / Pemohon:</strong> {req.hospital}</p>
+                    <p className="text-[#4A4A6A]"><strong>Golongan Darah:</strong> {req.bloodType}</p>
+                    <p className="text-[#4A4A6A]"><strong>Jumlah Kantong:</strong> {req.qty} Kantong</p>
+                    <p className="text-[#4A4A6A]"><strong>Tingkat Urgensi:</strong> <span className={req.priority === 'darurat' ? 'text-[#C0392B] font-bold' : 'text-[#16A085] font-semibold'}>{req.priority.toUpperCase()}</span></p>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold text-[#4A4A6A] block mb-2">Pilih Driver Aktif</label>
+                    {drivers.length === 0 ? (
+                      <div className="text-center py-4 border-2 border-dashed border-border rounded-xl">
+                        <p className="text-xs text-[#9B9BB5]">Belum ada driver yang terdaftar.</p>
+                        <button type="button" onClick={() => setShowAddDriverModal(true)}
+                          className="mt-2 text-xs font-bold text-[#1ABC9C] hover:underline">
+                          + Tambah Driver Baru Sekarang
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-2 max-h-48 overflow-y-auto pr-1 pb-1">
+                        {drivers.map(d => (
+                          <label key={d.id} className={`flex items-center justify-between p-3 rounded-xl border-2 cursor-pointer transition-all ${chosenDriverId === d.id ? 'border-[#1ABC9C] bg-[#E8F8F5]/30' : 'border-border hover:border-slate-300'}`}>
+                            <div className="flex items-center gap-3">
+                              <input
+                                type="radio"
+                                name="chosenDriver"
+                                value={d.id}
+                                checked={chosenDriverId === d.id}
+                                onChange={() => setChosenDriverId(d.id)}
+                                className="text-[#1ABC9C] focus:ring-[#1ABC9C]"
+                              />
+                              <div className="text-left">
+                                <p className="text-xs font-bold text-[#1A1A2E]">{d.name}</p>
+                                <p className="text-[10px] text-[#9B9BB5]">{d.vehicleNo} • {d.phone || 'No Telp'}</p>
+                              </div>
+                            </div>
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-[#4A4A6A]">Ready</span>
+                          </label>
+                        ))}
+                        <button type="button" onClick={() => setShowAddDriverModal(true)}
+                          className="w-full mt-2 py-2.5 border-2 border-dashed border-[#1ABC9C] text-[#1ABC9C] rounded-xl text-xs font-bold hover:bg-[#E8F8F5] transition-colors flex items-center justify-center gap-1.5">
+                          <Plus className="w-4 h-4" /> Tambah Driver Baru
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex gap-2 pt-2 border-t border-slate-100">
+                    <button type="button" onClick={() => setApprovingRequestId(null)}
+                      className="flex-1 py-2.5 rounded-xl border border-border text-xs font-bold text-[#4A4A6A] hover:bg-[#F4F4F8] transition-colors">
+                      Batal
+                    </button>
+                    <button type="button" onClick={confirmApprovalWithDriver} disabled={drivers.length === 0 || !chosenDriverId}
+                      className={`flex-1 py-2.5 rounded-xl text-white text-xs font-bold transition-colors ${drivers.length === 0 || !chosenDriverId ? 'bg-[#BDC3C7] cursor-not-allowed' : 'bg-[#C0392B] hover:bg-[#922B21]'}`}>
+                      Konfirmasi & Kirim
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+      {approvingPublicRequestId && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl border border-border">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="font-bold text-[#1A1A2E]" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>Persetujuan Permintaan Publik</h3>
+                <p className="text-xs text-[#9B9BB5] mt-0.5">Pilih driver yang akan ditugaskan mengirim darah</p>
+              </div>
+              <button onClick={() => setApprovingPublicRequestId(null)} className="p-1.5 rounded-lg text-[#9B9BB5] hover:bg-[#F4F4F8] transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {(() => {
+              const req = publicRequests.find(r => r.id === approvingPublicRequestId);
+              if (!req) return null;
+
+              return (
+                <div className="space-y-4">
+                  <div className="bg-slate-50 border border-slate-100 rounded-xl p-3 text-xs space-y-1.5">
+                    <p className="text-[#4A4A6A]"><strong>Instansi / Tujuan:</strong> {req.hospital_name}</p>
+                    <p className="text-[#4A4A6A]"><strong>Nama Pasien:</strong> {req.patient_name}</p>
+                    <p className="text-[#4A4A6A]"><strong>Golongan Darah:</strong> {req.blood_type}</p>
+                    <p className="text-[#4A4A6A]"><strong>Jumlah Kantong:</strong> {req.quantity} Kantong</p>
+                    <p className="text-[#4A4A6A]"><strong>Tingkat Urgensi:</strong> <span className={req.urgency === 'darurat' ? 'text-[#C0392B] font-bold' : 'text-[#16A085] font-semibold'}>{req.urgency.toUpperCase()}</span></p>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold text-[#4A4A6A] block mb-2">Pilih Driver Aktif</label>
+                    {drivers.length === 0 ? (
+                      <div className="text-center py-4 border-2 border-dashed border-border rounded-xl">
+                        <p className="text-xs text-[#9B9BB5]">Belum ada driver yang terdaftar.</p>
+                        <button type="button" onClick={() => setShowAddDriverModal(true)}
+                          className="mt-2 text-xs font-bold text-[#1ABC9C] hover:underline">
+                          + Tambah Driver Baru Sekarang
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-2 max-h-48 overflow-y-auto pr-1 pb-1">
+                        {drivers.map(d => (
+                          <label key={d.id} className={`flex items-center justify-between p-3 rounded-xl border-2 cursor-pointer transition-all ${chosenDriverId === d.id ? 'border-[#1ABC9C] bg-[#E8F8F5]/30' : 'border-border hover:border-slate-300'}`}>
+                            <div className="flex items-center gap-3">
+                              <input
+                                type="radio"
+                                name="chosenDriver"
+                                value={d.id}
+                                checked={chosenDriverId === d.id}
+                                onChange={() => setChosenDriverId(d.id)}
+                                className="text-[#1ABC9C] focus:ring-[#1ABC9C]"
+                              />
+                              <div className="text-left">
+                                <p className="text-xs font-bold text-[#1A1A2E]">{d.name}</p>
+                                <p className="text-[10px] text-[#9B9BB5]">{d.vehicleNo} • {d.phone || 'No Telp'}</p>
+                              </div>
+                            </div>
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-[#4A4A6A]">Ready</span>
+                          </label>
+                        ))}
+                        <button type="button" onClick={() => setShowAddDriverModal(true)}
+                          className="w-full mt-2 py-2.5 border-2 border-dashed border-[#1ABC9C] text-[#1ABC9C] rounded-xl text-xs font-bold hover:bg-[#E8F8F5] transition-colors flex items-center justify-center gap-1.5">
+                          <Plus className="w-4 h-4" /> Tambah Driver Baru
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex gap-2 pt-2 border-t border-slate-100">
+                    <button type="button" onClick={() => setApprovingPublicRequestId(null)}
+                      className="flex-1 py-2.5 rounded-xl border border-border text-xs font-bold text-[#4A4A6A] hover:bg-[#F4F4F8] transition-colors">
+                      Batal
+                    </button>
+                    <button type="button" onClick={confirmPublicApprovalWithDriver} disabled={drivers.length === 0 || !chosenDriverId}
+                      className={`flex-1 py-2.5 rounded-xl text-white text-xs font-bold transition-colors ${drivers.length === 0 || !chosenDriverId ? 'bg-[#BDC3C7] cursor-not-allowed' : 'bg-[#C0392B] hover:bg-[#922B21]'}`}>
+                      Konfirmasi & Kirim
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+      {/* ── Modal: Stock Action ─────────────────────────────── */}
+      <StockActionModal
+        isOpen={stockModalConfig.isOpen}
+        onClose={() => setStockModalConfig(prev => ({...prev, isOpen: false}))}
+        onSubmit={handleStockActionSubmit}
+        actionType={stockModalConfig.actionType}
+        bloodType={stockModalConfig.bloodType}
+        currentStock={stockModalConfig.currentStock}
+      />
+
+      {/* Modal Cetak Label */}
+      {showPrintModal && printBagInfo && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm flex flex-col overflow-hidden">
+            <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-[#F8F9FA]">
+              <h3 className="font-bold text-gray-800 flex items-center gap-2"><Printer className="w-5 h-5 text-gray-500"/> Cetak Label Stiker</h3>
+              <button onClick={() => setShowPrintModal(false)} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="p-6 bg-gray-50 flex-1 flex flex-col gap-6 items-center overflow-y-auto max-h-[60vh]">
+              {printBagInfo.bagCodes.map((code, idx) => (
+                <div key={idx} className="print:break-after-page">
+                  <Suspense fallback={<div className="text-sm text-[#9B9BB5] animate-pulse">Memuat komponen cetak...</div>}>
+                    <BarcodeLabel 
+                      bagCode={code} 
+                      bloodType={printBagInfo.bloodType} 
+                      expDate={printBagInfo.expDate} 
+                      sourceName={printBagInfo.sourceName} 
+                    />
+                  </Suspense>
+                </div>
+              ))}
+            </div>
+            <div className="p-4 border-t border-gray-100 flex gap-3">
+              <button onClick={() => setShowPrintModal(false)} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-gray-600 font-bold text-sm hover:bg-gray-50 transition-colors">Tutup</button>
+              <button onClick={() => window.print()} className="flex-1 py-2.5 rounded-xl bg-[#2980B9] text-white font-bold text-sm hover:bg-[#2471A3] transition-colors flex items-center justify-center gap-2">
+                <Printer className="w-4 h-4" /> Print
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+}

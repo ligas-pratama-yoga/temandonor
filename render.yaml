@@ -1,0 +1,50 @@
+services:
+  # 1. Python Machine Learning Service (FastAPI)
+  - type: web
+    name: bloodlink-ml
+    env: python
+    plan: free
+    rootDir: backend/ml_service
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.12
+      - key: PORT
+        value: 10000
+      - key: ML_INTERNAL_API_KEY
+        sync: false # Diisi di dashboard Render (samakan untuk ML dan Backend)
+
+  # 2. Node.js Express Backend
+  - type: web
+    name: bloodlink-backend
+    env: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # URL Internal untuk menghubungi layanan ML di atas secara cepat
+      - key: ML_API_URL
+        value: http://bloodlink-ml:10000/predict
+      - key: ML_INTERNAL_API_KEY
+        sync: false # Diisi di dashboard Render (samakan untuk ML dan Backend)
+      
+      # Database Configs (Wajib diisi nanti di Dashboard Render)
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        sync: false
+      # API Keys Eksternal (Opsional, isi di Dashboard jika perlu)
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false

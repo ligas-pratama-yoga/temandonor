@@ -1,0 +1,275 @@
+const express = require("express");
+const router = express.Router();
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const pool = require("../db");
+const { notifyIfNewDevice } = require("./loginNotifier.js");
+const {
+  sendEmail,
+  templateCustomMessage,
+} = require("../utils/emailService.js");
+
+function isPasswordSecure(pwd) {
+  return (
+    typeof pwd === "string" &&
+    pwd.length >= 8 &&
+    /[A-Z]/.test(pwd) &&
+    /[a-z]/.test(pwd) &&
+    /[0-9]/.test(pwd) &&
+    /[!@#$%^&*(),.?":{}|<>]/.test(pwd)
+  );
+}
+
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  console.error(
+    "FATAL: JWT_SECRET tidak ditemukan di file .env! Server dihentikan demi keamanan.",
+  );
+  process.exit(1);
+}
+
+// POST /api/auth/register
+router.post("/register", async (req, res) => {
+  const {
+    name,
+    email,
+    password,
+    role = "donor",
+    blood_type = "O-",
+    org = "-",
+    address = null,
+    phone = null,
+    latitude = null,
+    longitude = null,
+  } = req.body;
+
+  if (!email || !password || !name) {
+    return res
+      .status(400)
+      .json({ error: "Nama, email, dan password wajib diisi" });
+  }
+
+  if (!isPasswordSecure(password)) {
+    return res.status(400).json({
+      error:
+        "Password harus minimal 8 karakter dan mengandung huruf besar, kecil, angka, dan simbol",
+    });
+  }
+
+  // Validasi organisasi untuk institusi
+  if (role !== "donor" && (!org || org.trim() === "-" || org.trim() === "")) {
+    return res.status(400).json({
+      error: "Nama organisasi/instansi wajib diisi untuk pendaftaran PMI",
+    });
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    const [existing] = await connection.query(
+      "SELECT id FROM users WHERE email = ?",
+      [email],
+    );
+    if (existing.length > 0) {
+      await connection.rollback();
+      connection.release();
+      return res.status(400).json({ error: "Email sudah terdaftar" });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const userId = require("crypto").randomUUID();
+    const avatar = name.substring(0, 2).toUpperCase();
+
+    // 1. Simpan ke tabel users
+    await connection.query(
+      "INSERT INTO users (id, name, email, password_hash, role, org, avatar, address, phone, latitude, longitude) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        userId,
+        name,
+        email,
+        hashedPassword,
+        role,
+        org,
+        avatar,
+        address,
+        phone,
+        latitude,
+        longitude,
+      ],
+    );
+
+    // 2. Simpan ke tabel profil pendonor (sinkronisasi nomor HP dan alamat)
+    if (role === "donor") {
+      const profileId = "DP-" + userId.substring(0, 8) + "-" + Date.now();
+      await connection.query(
+        `INSERT INTO donor_profiles (id, user_id, blood_type, phone, address)
+         VALUES (?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE blood_type = VALUES(blood_type), phone = VALUES(phone), address = VALUES(address)`,
+        [profileId, userId, blood_type, phone, address],
+      );
+    }
+
+    await connection.commit();
+    connection.release();
+
+    const token = jwt.sign({ id: userId, email, role }, JWT_SECRET, {
+      expiresIn: "7d",
+    });
+    res.json({
+      message: "Registrasi berhasil",
+      token,
+      user: { id: userId, email, name, role },
+    });
+    sendEmail({
+      to: email,
+      subject: "Selamat datang di TemanDonor!",
+      html: templateCustomMessage({
+        donorName: name,
+        title: "Registrasi berhasil",
+        message: "Akun Anda sudah aktif. Terima kasih sudah bergabung.",
+        pmiName: "TemanDonor!",
+      }),
+    }).catch(() => {});
+  } catch (err) {
+    if (connection) {
+      await connection.rollback();
+      connection.release();
+    }
+    console.error("Error register:", err);
+    res.status(500).json({ error: "Gagal melakukan registrasi" });
+  }
+});
+
+// POST /api/auth/login
+router.post("/login", async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email dan password wajib diisi" });
+  }
+
+  try {
+    const [users] = await pool.query("SELECT * FROM users WHERE email = ?", [
+      email,
+    ]);
+
+    if (users.length === 0) {
+      return res.status(401).json({ error: "Email atau password salah" });
+    }
+
+    const user = users[0];
+    const isValid = await bcrypt
+      .compare(password, user.password_hash)
+      .catch(() => false);
+
+    if (!isValid) {
+      return res.status(401).json({ error: "Email atau password salah" });
+    }
+
+    // const token = jwt.sign({ id: user.id, email: user.email, role: user.role, org: user.org }, JWT_SECRET, { expiresIn: '7d' });
+    // res.json({
+    //   token,
+    //   user: {
+    //     id: user.id,
+    //     email: user.email,
+    //     name: user.name,
+    //     role: user.role,
+    //     org: user.org
+    //   }
+    // });
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role: user.role, org: user.org },
+      JWT_SECRET,
+      { expiresIn: "7d" },
+    );
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        org: user.org,
+      },
+    });
+
+    notifyIfNewDevice(user, req).catch((err) =>
+      console.error("[Login] Gagal kirim notifikasi:", err.message),
+    );
+  } catch (err) {
+    console.error("Error login:", err);
+    res.status(500).json({ error: "Terjadi kesalahan pada server saat login" });
+  }
+});
+
+// GET /api/auth/me
+router.get("/me", async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Token otentikasi tidak ditemukan" });
+  }
+
+  const token = authHeader.split(" ")[1];
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const [users] = await pool.query(
+      "SELECT id, email, name, role, org, address, phone, created_at FROM users WHERE id = ?",
+      [decoded.id],
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({ error: "User tidak ditemukan" });
+    }
+
+    res.json({ user: users[0] });
+  } catch (err) {
+    return res.status(401).json({ error: "Token tidak valid" });
+  }
+});
+
+// PUT /api/auth/me
+router.put("/me", async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Token otentikasi tidak ditemukan" });
+  }
+
+  const token = authHeader.split(" ")[1];
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const { name, email } = req.body;
+
+    if (!name || !email) {
+      return res.status(400).json({ error: "Nama dan email wajib diisi" });
+    }
+
+    const avatar = name.substring(0, 2).toUpperCase();
+
+    // Cek apakah email sudah dipakai user lain
+    const [existing] = await pool.query(
+      "SELECT id FROM users WHERE email = ? AND id != ?",
+      [email, decoded.id],
+    );
+    if (existing.length > 0) {
+      return res
+        .status(400)
+        .json({ error: "Email sudah digunakan oleh akun lain" });
+    }
+
+    await pool.query(
+      "UPDATE users SET name = ?, email = ?, avatar = ? WHERE id = ?",
+      [name, email, avatar, decoded.id],
+    );
+
+    res.json({ message: "Profil berhasil diperbarui" });
+  } catch (err) {
+    if (err.name === "JsonWebTokenError" || err.name === "TokenExpiredError") {
+      return res.status(401).json({ error: "Token tidak valid" });
+    }
+    console.error("Error update auth/me:", err);
+    res.status(500).json({ error: "Gagal memperbarui profil pengguna" });
+  }
+});
+
+module.exports = router;

@@ -1,0 +1,421 @@
+const express = require('express');
+const router = express.Router();
+const pool = require('../db');
+const { authMiddleware, requireRole } = require('../middleware/auth');
+
+// GET /api/orders/requests (Blood Requests) — 🔒 Harus login
+router.get('/requests', authMiddleware, async (req, res) => {
+  try {
+    // Superadmin melihat semua, PMI hanya melihat miliknya sendiri
+    // Superadmin melihat semua, PMI hanya miliknya, RS hanya miliknya
+    const isPMI = req.user.role === 'pmi';
+    let whereClause = '';
+    const params = [];
+    if (isPMI) {
+      whereClause = 'WHERE r.pmi_id = ?';
+      params.push(req.user.id);
+    }
+
+    const query = `
+      SELECT 
+        r.id, 
+        r.blood_type, 
+        r.quantity AS qty, 
+        r.urgency AS priority, 
+        r.status, 
+        r.created_at, 
+        COALESCE(NULLIF(NULLIF(u.org, '-'), ''), u.name, 'Rumah Sakit') AS hospital,
+        u.address AS address, 
+        u.phone AS contact,
+        COALESCE(NULLIF(NULLIF(p.org, '-'), ''), p.name, 'PMI Unit') AS pmi,
+        r.hospital_id,
+        r.pmi_id
+      FROM blood_requests r
+      JOIN users u ON u.id = r.hospital_id
+      LEFT JOIN users p ON p.id = r.pmi_id
+      ${whereClause}
+      ORDER BY r.created_at DESC
+    `;
+    const [rows] = await pool.query(query, params);
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetch blood requests:', err);
+    res.status(500).json({ error: 'Gagal mengambil permintaan darah' });
+  }
+});
+
+// POST /api/orders/requests
+const MAX_QTY_PER_ORDER = 30;
+
+router.post('/requests', authMiddleware, async (req, res) => {
+  // Gunakan hospital_id jika ada (dari admin), jika tidak gunakan ID user yang login
+  const { hospital_id, hospital, blood_type, qty, quantity, priority, urgency = priority || 'normal', address, contact, pmi_id } = req.body;
+  const hospitalRef = hospital_id || req.user.id;
+  const qtyVal = quantity || qty;
+
+  if (!hospitalRef || !blood_type || !qtyVal) {
+    return res.status(400).json({ error: 'Rumah sakit, golongan darah, dan jumlah kantong wajib diisi' });
+  }
+
+  if (!pmi_id) {
+    return res.status(400).json({ error: 'Pilih PMI tujuan terlebih dahulu' });
+  }
+
+  if (Number(qtyVal) < 1 || Number(qtyVal) > MAX_QTY_PER_ORDER) {
+    return res.status(400).json({ error: `Jumlah kantong per pemesanan harus antara 1–${MAX_QTY_PER_ORDER} kantong.` });
+  }
+
+  // Validasi pmi_id ada di database dan role-nya pmi
+  const [pmiCheck] = await pool.query("SELECT id, org FROM users WHERE id = ? AND role = 'pmi'", [pmi_id]);
+  if (!pmiCheck.length) {
+    return res.status(400).json({ error: 'PMI tujuan tidak valid' });
+  }
+
+  const id = 'REQ-' + Date.now();
+  try {
+    await pool.query(
+      'INSERT INTO blood_requests (id, hospital_id, pmi_id, blood_type, quantity, urgency) VALUES (?, ?, ?, ?, ?, ?)',
+      [id, hospitalRef, pmi_id, blood_type, qtyVal, urgency]
+    );
+
+    // Notify only the target PMI
+    await pool.query(
+      "INSERT INTO notifications (id, user_id, type, title, message) VALUES (?, ?, 'request', 'Permintaan Darah Baru', ?)",
+      ['N-' + Date.now() + Math.floor(Math.random()*1000), pmi_id, `Ada permintaan darah ${blood_type} sebanyak ${qtyVal} kantong dari RS.`]
+    );
+
+    res.json({ message: 'Permintaan darah berhasil dibuat', id });
+  } catch (err) {
+    console.error('Error create blood request:', err);
+    res.status(500).json({ error: 'Gagal membuat permintaan darah' });
+  }
+});
+
+// GET /api/orders/deliveries — 🔒 Harus login
+router.get('/deliveries', authMiddleware, async (req, res) => {
+  try {
+    const isPMI = req.user.role === 'pmi';
+    let whereClause = '';
+    const params = [];
+    if (isPMI) {
+      whereClause = 'WHERE r.pmi_id = ?';
+      params.push(req.user.id);
+    }
+
+    const query = `
+      SELECT 
+        d.id, d.order_id, r.blood_type, r.quantity, 
+        COALESCE(NULLIF(NULLIF(p.org, '-'), ''), p.name, 'PMI') AS pmi_name, 
+        COALESCE(NULLIF(NULLIF(h.org, '-'), ''), h.name, 'Rumah Sakit') AS hospital_name, 
+        u.name AS driver_name, u.phone AS driver_phone, 
+        d.status, d.eta, d.distance_km AS distance, d.pct, 
+        IF(r.urgency IN ('mendesak', 'darurat'), 1, 0) AS urgent, 
+        d.updated_at, d.created_at,
+        d.driver_lat, d.driver_lng, d.location_updated_at
+      FROM deliveries d
+      JOIN blood_requests r ON d.order_id = r.id
+      JOIN users h ON r.hospital_id = h.id
+      LEFT JOIN users p ON r.pmi_id = p.id
+      LEFT JOIN users u ON d.driver_id = u.id
+      ${whereClause}
+      ORDER BY d.updated_at DESC
+    `;
+    const [rows] = await pool.query(query, params);
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetch deliveries:', err);
+    res.status(500).json({ error: 'Gagal mengambil data pengiriman' });
+  }
+});
+
+// POST /api/orders/deliveries — 🔒 Hanya pmi/superadmin
+router.post('/deliveries', authMiddleware, requireRole('pmi', 'superadmin'), async (req, res) => {
+  const { id, orderId, driverId, status, eta, distance, pct } = req.body;
+  if (!id || !orderId || !driverId) {
+    return res.status(400).json({ error: 'Data pengiriman tidak lengkap' });
+  }
+
+  try {
+    await pool.query(
+      `INSERT INTO deliveries (id, order_id, driver_id, status, eta, distance_km, pct) 
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [id, orderId, driverId, status || 'disiapkan', eta || '-', distance || '-', pct || 0]
+    );
+
+    // Notify Driver
+    await pool.query(
+      "INSERT INTO notifications (id, user_id, type, title, message) VALUES (?, ?, 'delivery', 'Tugas Pengiriman Baru', 'Anda ditugaskan untuk mengirimkan darah. Silakan cek di menu pengiriman.')",
+      ['N-' + Date.now(), driverId]
+    );
+
+    res.json({ message: 'Tugas pengiriman berhasil dibuat', id });
+  } catch (err) {
+    console.error('Error create delivery:', err);
+    res.status(500).json({ error: 'Gagal membuat tugas pengiriman' });
+  }
+});
+
+// PUT /api/orders/deliveries/:id/status — 🔒 Hanya role driver/pmi/superadmin
+router.put('/deliveries/:id/status', authMiddleware, requireRole('driver', 'pmi', 'superadmin'), async (req, res) => {
+  const { id } = req.params;
+  const { status, pct, eta } = req.body;
+
+  try {
+    await pool.query(
+      'UPDATE deliveries SET status = COALESCE(?, status), pct = COALESCE(?, pct), eta = COALESCE(?, eta) WHERE id = ?',
+      [status, pct, eta, id]
+    );
+
+    // Ambil info pengiriman lengkap (RS, driver, PMI, dan detail darah)
+    const [delivs] = await pool.query(
+      `SELECT r.hospital_id, d.driver_id, r.pmi_id, r.blood_type, r.quantity
+       FROM deliveries d
+       JOIN blood_requests r ON r.id = d.order_id
+       WHERE d.id = ?`,
+      [id]
+    );
+
+    if (delivs.length > 0 && status) {
+      const { hospital_id, driver_id, pmi_id, blood_type, quantity } = delivs[0];
+      const ts = Date.now();
+
+      if (status === 'tiba') {
+        // Notifikasi khusus ke RS: darah sudah tiba, minta konfirmasi penerimaan
+        await pool.query(
+          `INSERT INTO notifications (id, user_id, type, title, message)
+           VALUES (?, ?, 'delivery_arrived', '🩸 Darah Tiba! Konfirmasi Penerimaan', ?)`,
+          [
+            'N-' + ts,
+            hospital_id,
+            `Darah golongan ${blood_type} (${quantity} kantong) telah tiba di rumah sakit Anda. Silakan segera lakukan konfirmasi penerimaan dan QC pada tab Riwayat Order.`
+          ]
+        );
+      } else if (status === 'selesai') {
+        // Notifikasi ke driver: RS sudah konfirmasi penerimaan
+        if (driver_id) {
+          await pool.query(
+            `INSERT INTO notifications (id, user_id, type, title, message)
+             VALUES (?, ?, 'delivery_confirmed', '✅ Penerimaan Dikonfirmasi RS', ?)`,
+            [
+              'N-' + ts + '1',
+              driver_id,
+              `Rumah sakit telah mengkonfirmasi penerimaan darah ${blood_type} (${quantity} kantong). Pengiriman selesai!`
+            ]
+          );
+        }
+        // Notifikasi ke PMI: darah sudah diterima RS
+        if (pmi_id) {
+          await pool.query(
+            `INSERT INTO notifications (id, user_id, type, title, message)
+             VALUES (?, ?, 'delivery_confirmed', '✅ Stok Darah Diterima RS', ?)`,
+            [
+              'N-' + ts + '2',
+              pmi_id,
+              `Pengiriman darah ${blood_type} (${quantity} kantong) telah diterima dan dikonfirmasi oleh pihak rumah sakit.`
+            ]
+          );
+        }
+      } else {
+        // Notifikasi umum status lainnya ke RS
+        const statusLabel = { dijemput: 'Dijemput oleh Driver', perjalanan: 'Sedang Dalam Perjalanan' }[status] || status;
+        await pool.query(
+          `INSERT INTO notifications (id, user_id, type, title, message)
+           VALUES (?, ?, 'delivery_status', 'Update Pengiriman Darah', ?)`,
+          [
+            'N-' + ts,
+            hospital_id,
+            `Darah ${blood_type} (${quantity} kantong) — Status: ${statusLabel}.`
+          ]
+        );
+      }
+    }
+
+    res.json({ message: 'Status pengiriman berhasil diperbarui' });
+  } catch (err) {
+    console.error('Error update delivery status:', err);
+    res.status(500).json({ error: 'Gagal memperbarui pengiriman' });
+  }
+});
+
+// PUT /api/orders/requests/:id/status — 🔒 PMI/superadmin bisa update status
+// Ketika PMI set status = 'diproses', otomatis assign pmi_id = req.user.id
+router.put('/requests/:id/status', authMiddleware, requireRole('pmi', 'superadmin'), async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+  try {
+    if (req.user.role === 'pmi' && status === 'diproses') {
+      // Assign request ke PMI yang menyetujuinya
+      await pool.query(
+        'UPDATE blood_requests SET status = ?, pmi_id = ? WHERE id = ?',
+        [status, req.user.id, id]
+      );
+    } else {
+      await pool.query('UPDATE blood_requests SET status = ? WHERE id = ?', [status, id]);
+    }
+    res.json({ message: 'Status permintaan berhasil diperbarui' });
+  } catch (err) {
+    console.error('Error update request status:', err);
+    res.status(500).json({ error: 'Gagal memperbarui status permintaan' });
+  }
+});
+
+// PATCH /api/orders/requests/:id/assign-pmi — PMI klaim/claim request (sebelum approve)
+router.patch('/requests/:id/assign-pmi', authMiddleware, requireRole('pmi', 'superadmin'), async (req, res) => {
+  const { id } = req.params;
+  try {
+    // Pastikan request belum di-assign ke PMI lain
+    const [rows] = await pool.query('SELECT pmi_id FROM blood_requests WHERE id = ?', [id]);
+    if (rows.length === 0) return res.status(404).json({ error: 'Request tidak ditemukan' });
+    if (rows[0].pmi_id && rows[0].pmi_id !== req.user.id && req.user.role !== 'superadmin') {
+      return res.status(409).json({ error: 'Request ini sudah diambil oleh PMI lain' });
+    }
+    await pool.query('UPDATE blood_requests SET pmi_id = ? WHERE id = ?', [req.user.id, id]);
+    res.json({ message: 'Request berhasil diklaim oleh PMI Anda' });
+  } catch (err) {
+    console.error('Error assign PMI to request:', err);
+    res.status(500).json({ error: 'Gagal mengklaim request' });
+  }
+});
+
+// POST /api/orders/blood — Buat pesanan darah baru
+router.post('/blood', authMiddleware, requireRole('superadmin', 'pmi'), async (req, res) => {
+  // Terima qty atau quantity, hospital_id atau hospital
+  const { blood_type, qty, quantity, urgency = 'normal', hospital_id, pmi_id } = req.body;
+  const qtyVal = quantity || qty;
+  if (!blood_type || !qtyVal) {
+    return res.status(400).json({ error: 'Golongan darah dan jumlah wajib diisi' });
+  }
+
+  if (Number(qtyVal) < 1 || Number(qtyVal) > MAX_QTY_PER_ORDER) {
+    return res.status(400).json({ error: `Jumlah kantong per pemesanan harus antara 1–${MAX_QTY_PER_ORDER} kantong.` });
+  }
+  const id = 'ORD-' + Date.now();
+  try {
+    await pool.query(
+      'INSERT INTO blood_orders (id, hospital_id, pmi_id, blood_type, quantity, urgency, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [id, hospital_id || null, pmi_id || null, blood_type, qtyVal, urgency, 'menunggu']
+    );
+    res.json({ message: 'Pesanan darah berhasil dibuat', id });
+  } catch (err) {
+    console.error('Error create blood order:', err);
+    res.status(500).json({ error: 'Gagal membuat pesanan darah' });
+  }
+});
+
+// GET /api/orders/blood — Ambil semua pesanan darah
+router.get('/blood', authMiddleware, async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        o.id, o.blood_type, o.quantity AS qty, o.urgency, o.status, o.created_at, o.updated_at,
+        COALESCE(NULLIF(NULLIF(p.org, '-'), ''), p.name, 'PMI Unit') AS pmi
+      FROM blood_orders o
+      LEFT JOIN users p ON p.id = o.pmi_id
+      ORDER BY o.created_at DESC
+    `;
+    const [rows] = await pool.query(query);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Gagal mengambil pesanan darah' });
+  }
+});
+
+// GET /api/orders/public-requests — Ambil semua permintaan publik (PMI/Superadmin)
+router.get('/public-requests', authMiddleware, requireRole('pmi', 'superadmin'), async (req, res) => {
+  try {
+    const query = `SELECT * FROM public_blood_requests ORDER BY created_at DESC`;
+    const [rows] = await pool.query(query);
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetch public requests:', err);
+    res.status(500).json({ error: 'Gagal mengambil data permintaan publik' });
+  }
+});
+
+// PUT /api/orders/public-requests/:id/status — Update status permintaan publik
+router.put('/public-requests/:id/status', authMiddleware, requireRole('pmi', 'superadmin'), async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+  try {
+    await pool.query('UPDATE public_blood_requests SET status = ? WHERE id = ?', [status, id]);
+    res.json({ message: 'Status permintaan publik berhasil diperbarui' });
+  } catch (err) {
+    console.error('Error update public request status:', err);
+    res.status(500).json({ error: 'Gagal memperbarui status permintaan publik' });
+  }
+});
+
+// POST /api/orders/deliveries/:id/location — 🔒 Hanya driver: kirim koordinat GPS real-time
+router.post('/deliveries/:id/location', authMiddleware, requireRole('driver', 'superadmin'), async (req, res) => {
+  const { id } = req.params;
+  const { lat, lng } = req.body;
+
+  if (lat === undefined || lng === undefined) {
+    return res.status(400).json({ error: 'Koordinat lat dan lng wajib diisi' });
+  }
+
+  const latNum = parseFloat(lat);
+  const lngNum = parseFloat(lng);
+  if (isNaN(latNum) || isNaN(lngNum) || latNum < -90 || latNum > 90 || lngNum < -180 || lngNum > 180) {
+    return res.status(400).json({ error: 'Koordinat tidak valid' });
+  }
+
+  try {
+    const [result] = await pool.query(
+      'UPDATE deliveries SET driver_lat = ?, driver_lng = ?, location_updated_at = NOW() WHERE id = ?',
+      [latNum, lngNum, id]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Pengiriman tidak ditemukan' });
+    }
+    res.json({ message: 'Lokasi driver berhasil diperbarui', lat: latNum, lng: lngNum });
+  } catch (err) {
+    console.error('Error update driver location:', err);
+    res.status(500).json({ error: 'Gagal memperbarui lokasi driver' });
+  }
+});
+
+// GET /api/orders/deliveries/:id/location — 🔒 Harus login: ambil koordinat GPS driver
+router.get('/deliveries/:id/location', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [rows] = await pool.query(
+      `SELECT 
+        d.driver_lat AS lat, d.driver_lng AS lng, d.location_updated_at,
+        u.name AS driver_name, d.status, d.eta, d.pct,
+        COALESCE(NULLIF(NULLIF(p.org, '-'), ''), p.name, 'PMI') AS from_name,
+        COALESCE(NULLIF(NULLIF(h.org, '-'), ''), h.name, 'Rumah Sakit') AS to_name,
+        r.blood_type, r.quantity
+       FROM deliveries d
+       JOIN blood_requests r ON d.order_id = r.id
+       JOIN users h ON r.hospital_id = h.id
+       LEFT JOIN users p ON r.pmi_id = p.id
+       LEFT JOIN users u ON d.driver_id = u.id
+       WHERE d.id = ?`,
+      [id]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Pengiriman tidak ditemukan' });
+    }
+    const row = rows[0];
+    res.json({
+      lat: row.lat ? parseFloat(row.lat) : null,
+      lng: row.lng ? parseFloat(row.lng) : null,
+      location_updated_at: row.location_updated_at,
+      driver_name: row.driver_name,
+      status: row.status,
+      eta: row.eta,
+      pct: row.pct,
+      from_name: row.from_name,
+      to_name: row.to_name,
+      blood_type: row.blood_type,
+      quantity: row.quantity,
+      has_location: row.lat !== null && row.lng !== null
+    });
+  } catch (err) {
+    console.error('Error get driver location:', err);
+    res.status(500).json({ error: 'Gagal mengambil lokasi driver' });
+  }
+});
+
+module.exports = router;
