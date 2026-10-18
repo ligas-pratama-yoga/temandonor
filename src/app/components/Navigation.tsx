@@ -113,7 +113,11 @@ export default function Navigation() {
 
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     if (typeof window !== 'undefined') {
-      return (localStorage.getItem('theme') as 'light' | 'dark') || 'light';
+      const stored = localStorage.getItem('theme');
+      if (stored === 'dark' || stored === 'light') return stored;
+      // Auto: siang (06:00–18:00) = light, malam = dark
+      const h = new Date().getHours();
+      return (h >= 6 && h < 18) ? 'light' : 'dark';
     }
     return 'light';
   });
@@ -208,7 +212,7 @@ export default function Navigation() {
   return (
     <>
       {/* ── Navbar ─────────────────────────────────────────── */}
-      <nav className={`fixed top-0 left-0 right-0 z-50 bg-white transition-all duration-300 ${scrolled ? 'shadow-lg border-b border-border' : 'border-b border-border'}`}>
+      <nav className={`fixed top-0 left-0 right-0 z-50 bg-white dark:bg-[#13131f] transition-all duration-300 ${scrolled ? 'shadow-lg border-b border-border' : 'border-b border-border'}`}>
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center h-16 gap-2">
 
@@ -226,7 +230,7 @@ export default function Navigation() {
               <div className="w-9 h-9 rounded-xl flex items-center justify-center shadow-sm" style={{ background: 'linear-gradient(135deg,#C0392B,#7B241C)' }}>
                 <Droplets className="w-5 h-5 text-white fill-white" />
               </div>
-              <span className="font-bold text-[17px] text-[#1A1A2E] hidden sm:block tracking-tight" style={{ fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
+              <span className="font-bold text-[17px] text-[#1A1A2E] dark:text-white hidden sm:block tracking-tight" style={{ fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
                 TemanDonor!
               </span>
             </Link>
@@ -307,7 +311,7 @@ export default function Navigation() {
                   </button>
 
                   {profileOpen && (
-                    <div className="absolute top-full right-0 mt-2 bg-white border border-border rounded-2xl shadow-xl w-56 overflow-hidden z-50">
+                    <div className="absolute top-full right-0 mt-2 bg-white dark:bg-[#13131f] border border-border rounded-2xl shadow-xl w-56 overflow-hidden z-50">
                       {/* User header */}
                       <div className="px-4 py-3 border-b border-border" style={{ background: roleCfg?.bg }}>
                         <div className="flex items-center gap-3">
@@ -322,12 +326,12 @@ export default function Navigation() {
                       </div>
                       {/* Menu items */}
                       <div className="py-1.5">
-                        <div onClick={() => { setProfileModalOpen(true); setProfileOpen(false); }} className="flex items-center gap-2.5 px-4 py-2.5 text-sm text-[#4A4A6A] hover:bg-[#F4F4F8] hover:text-[#C0392B] transition-colors cursor-pointer">
+                        <div onClick={() => { setProfileModalOpen(true); setProfileOpen(false); }} className="flex items-center gap-2.5 px-4 py-2.5 text-sm text-[#4A4A6A] dark:text-[#a5a5c5] hover:bg-[#F4F4F8] dark:hover:bg-[#1a1a2a] hover:text-[#C0392B] transition-colors cursor-pointer">
                           <User className="w-4 h-4" /> Profil Akun
                         </div>
                       </div>
                       <div className="border-t border-border py-1.5">
-                        <button onClick={handleLogout} className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-[#C0392B] hover:bg-[#FDEDEC] transition-colors">
+                        <button onClick={handleLogout} className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-[#C0392B] hover:bg-[#FDEDEC] dark:hover:bg-[#2a1218] transition-colors">
                           <LogOut className="w-4 h-4" /> Keluar
                         </button>
                       </div>
@@ -380,7 +384,7 @@ export default function Navigation() {
 
       {/* ── Drawer ─────────────────────────────────────────── */}
       <div
-        className={`fixed top-0 left-0 h-full w-72 bg-white z-50 md:hidden shadow-2xl flex flex-col transition-transform duration-300 ease-in-out ${drawerOpen ? 'translate-x-0' : '-translate-x-full'}`}
+        className={`fixed top-0 left-0 h-full w-72 bg-white dark:bg-[#13131f] z-50 md:hidden shadow-2xl flex flex-col transition-transform duration-300 ease-in-out ${drawerOpen ? 'translate-x-0' : '-translate-x-full'}`}
         role="dialog"
         aria-modal="true"
         aria-label="Menu navigasi"
@@ -391,7 +395,7 @@ export default function Navigation() {
             <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: 'linear-gradient(135deg,#C0392B,#7B241C)' }}>
               <Droplets className="w-4 h-4 text-white fill-white" />
             </div>
-            <span className="font-bold text-[15px] text-[#1A1A2E]" style={{ fontFamily: "'Plus Jakarta Sans',sans-serif" }}>TemanDonor!</span>
+            <span className="font-bold text-[15px] text-[#1A1A2E] dark:text-white" style={{ fontFamily: "'Plus Jakarta Sans',sans-serif" }}>TemanDonor!</span>
           </div>
           <div className="flex items-center gap-1.5">
             <button
@@ -431,9 +435,9 @@ export default function Navigation() {
             <div className="space-y-0.5">
               {coreLinks.map(({ to, label, icon: Icon }) => (
                 <Link key={to} to={to} onClick={() => setDrawerOpen(false)}>
-                  <div className={`flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-all ${isActive(to) ? 'bg-[#FDEDEC] text-[#C0392B]' : 'text-[#4A4A6A] hover:bg-[#F4F4F8]'}`}>
+                  <div className={`flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-all ${isActive(to) ? 'bg-[#FDEDEC] dark:bg-[#2a1218] text-[#C0392B]' : 'text-[#4A4A6A] dark:text-[#a5a5c5] hover:bg-[#F4F4F8] dark:hover:bg-[#1a1a2a]'}`}>
                     <div className="flex items-center gap-3">
-                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${isActive(to) ? 'bg-[#C0392B]/10' : 'bg-[#F4F4F8]'}`}>
+                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${isActive(to) ? 'bg-[#C0392B]/10' : 'bg-[#F4F4F8] dark:bg-[#1a1a2a]'}`}>
                         <Icon className={`w-4 h-4 ${isActive(to) ? 'text-[#C0392B]' : 'text-[#9B9BB5]'}`} />
                       </div>
                       {label}
@@ -449,11 +453,11 @@ export default function Navigation() {
               <>
                 <div className="h-4" />
                 <p className="text-[11px] font-bold uppercase tracking-widest text-[#9B9BB5] px-3 pb-2">Dashboard</p>
-                <div className="space-y-0.5">
+                  <div className="space-y-0.5">
                   <Link to={roleNavExtra[user.role]!.to} onClick={() => setDrawerOpen(false)}>
-                    <div className={`flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-all ${isActive(roleNavExtra[user.role]!.to) ? 'bg-[#FDEDEC] text-[#C0392B]' : 'text-[#4A4A6A] hover:bg-[#F4F4F8]'}`}>
+                    <div className={`flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-all ${isActive(roleNavExtra[user.role]!.to) ? 'bg-[#FDEDEC] dark:bg-[#2a1218] text-[#C0392B]' : 'text-[#4A4A6A] dark:text-[#a5a5c5] hover:bg-[#F4F4F8] dark:hover:bg-[#1a1a2a]'}`}>
                       <div className="flex items-center gap-3">
-                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${isActive(roleNavExtra[user.role]!.to) ? 'bg-[#C0392B]/10' : 'bg-[#F4F4F8]'}`}>
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${isActive(roleNavExtra[user.role]!.to) ? 'bg-[#C0392B]/10' : 'bg-[#F4F4F8] dark:bg-[#1a1a2a]'}`}>
                           <LayoutDashboard className={`w-4 h-4 ${isActive(roleNavExtra[user.role]!.to) ? 'text-[#C0392B]' : 'text-[#9B9BB5]'}`} />
                         </div>
                         {roleNavExtra[user.role]!.label}

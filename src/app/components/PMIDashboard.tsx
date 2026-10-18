@@ -1173,7 +1173,7 @@ export default function PMIDashboard() {
   const bloodTypes = ['Semua', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
 
   return (
-    <div className="min-h-screen py-8 bg-[#F7F7FB]">
+    <div className="min-h-screen py-8 bg-[#F7F7FB] dark:bg-[#0d0d15] transition-colors">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
 
         {/* Header */}
@@ -1267,24 +1267,27 @@ export default function PMIDashboard() {
 
         {/* Tabs */}
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)}>
-          <TabsList className="bg-white dark:bg-[#13131f] border border-border rounded-xl p-1 mb-6 flex overflow-x-auto max-w-full gap-1 h-auto no-scrollbar flex-nowrap shrink-0">
-            {[
-              { value: 'overview', label: 'Ringkasan & Analitik', icon: BarChart2 },
-              { value: 'requests', label: 'Permohonan Masuk', icon: Bell },
-              { value: 'public-requests', label: 'Permintaan Publik', icon: Droplets },
-              { value: 'stock', label: 'Manajemen Stok', icon: Package },
-              { value: 'donors', label: 'Database Donor', icon: Users },
-              { value: 'events', label: 'Event Donor', icon: Calendar },
-              { value: 'broadcast', label: 'Broadcast Donor', icon: Megaphone },
-              { value: 'drivers', label: 'Kelola Driver', icon: Truck },
-              { value: 'ledger', label: 'Riwayat Stok', icon: RefreshCw },
-            ].map(({ value, label, icon: Icon }) => (
-              <TabsTrigger key={value} value={value} className="rounded-lg text-xs sm:text-sm data-[state=active]:bg-[#C0392B] data-[state=active]:text-white data-[state=active]:shadow-xs flex items-center gap-1.5 font-semibold transition-all">
-                <Icon className="w-3.5 h-3.5" />
-                {label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
+          {/* Outer scroll wrapper prevents Radix justify-center from clipping first tab */}
+          <div className="w-full overflow-x-auto pb-1 mb-6" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+            <TabsList className="inline-flex w-max min-w-full bg-white dark:bg-[#13131f] border border-border rounded-xl p-1 gap-1 h-auto justify-start flex-nowrap">
+              {[
+                { value: 'overview', label: 'Ringkasan & Analitik', icon: BarChart2 },
+                { value: 'requests', label: 'Permohonan Masuk', icon: Bell },
+                { value: 'public-requests', label: 'Permintaan Publik', icon: Droplets },
+                { value: 'stock', label: 'Manajemen Stok', icon: Package },
+                { value: 'donors', label: 'Database Donor', icon: Users },
+                { value: 'events', label: 'Event Donor', icon: Calendar },
+                { value: 'broadcast', label: 'Broadcast Donor', icon: Megaphone },
+                { value: 'drivers', label: 'Kelola Driver', icon: Truck },
+                { value: 'ledger', label: 'Riwayat Stok', icon: RefreshCw },
+              ].map(({ value, label, icon: Icon }) => (
+                <TabsTrigger key={value} value={value} className="shrink-0 whitespace-nowrap rounded-lg text-xs sm:text-sm px-3.5 py-2 data-[state=active]:bg-[#C0392B] data-[state=active]:text-white data-[state=active]:shadow-xs flex items-center gap-1.5 font-semibold transition-all">
+                  <Icon className="w-3.5 h-3.5 shrink-0" />
+                  {label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </div>
 
           {/* ── Tab: Overview & Analitik Beranimasi ──────────────────── */}
           <TabsContent value="overview" className="space-y-6">

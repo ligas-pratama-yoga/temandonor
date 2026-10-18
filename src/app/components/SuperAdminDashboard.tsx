@@ -402,16 +402,16 @@ export default function SuperAdminDashboard() {
   );
 
   return (
-    <div className="min-h-screen bg-[#F7F7FB]">
+    <div className="min-h-screen bg-[#F7F7FB] dark:bg-[#0d0d15] transition-colors">
       {/* Header */}
-      <div className="bg-white border-b border-border px-4 py-5 sticky top-0 z-30 shadow-sm">
+      <div className="bg-white dark:bg-[#13131f] border-b border-border px-4 py-5 sticky top-0 z-30 shadow-sm">
         <div className="max-w-6xl mx-auto flex items-center justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-[#1A1A2E] flex items-center justify-center">
+            <div className="w-10 h-10 rounded-xl bg-[#1A1A2E] dark:bg-[#C0392B] flex items-center justify-center">
               <Shield className="w-5 h-5 text-white" />
             </div>
             <div>
-              <h1 className="font-bold text-[#1A1A2E] text-lg leading-tight" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+              <h1 className="font-bold text-[#1A1A2E] dark:text-white text-lg leading-tight" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
                 Super Admin Dashboard
               </h1>
               <p className="text-xs text-[#9B9BB5]">TemanDonor! — Pengaturan Instansi & Lokasi Peta</p>

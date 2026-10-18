@@ -210,7 +210,7 @@ export default function DonorDashboard() {
   const hoverCardClass = "hover:-translate-y-1 hover:shadow-md hover:border-[#C0392B]/30 cursor-pointer";
 
   return (
-    <div className="min-h-screen bg-[#F7F7FB] pb-20 text-[#1A1A2E] transition-colors duration-200">
+    <div className="min-h-screen bg-[#F7F7FB] dark:bg-[#0d0d15] pb-20 text-[#1A1A2E] dark:text-white transition-colors duration-200">
       
       {/* ─── HEADER (Premium Aesthetics) ─────────── */}
       <div 

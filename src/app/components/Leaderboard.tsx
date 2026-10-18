@@ -74,7 +74,7 @@ export default function Leaderboard() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#F7F7FB] flex items-center justify-center">
+      <div className="min-h-screen bg-[#F7F7FB] dark:bg-[#0d0d15] flex items-center justify-center transition-colors">
         <div className="flex flex-col items-center gap-3">
           <div className="w-10 h-10 border-4 border-[#C0392B]/20 border-t-[#C0392B] rounded-full animate-spin" />
           <span className="text-sm font-semibold text-[#4A4A6A] tracking-wide">Memuat Leaderboard...</span>
@@ -87,7 +87,7 @@ export default function Leaderboard() {
   const rest = top10.slice(3);
 
   return (
-    <div className="min-h-screen bg-[#F7F7FB] pb-20">
+    <div className="min-h-screen bg-[#F7F7FB] dark:bg-[#0d0d15] pb-20 transition-colors">
       
       {/* ─── HEADER ────────────────────────────────────────────────────────── */}
       <div

@@ -42,7 +42,7 @@ export default function Information() {
   usePageTitle('Informasi Donor Darah');
 
   return (
-    <div className="min-h-screen py-8 bg-[#F7F7FB]">
+    <div className="min-h-screen py-8 bg-[#F7F7FB] dark:bg-[#0d0d15] transition-colors">
       <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
 
         {/* Sticky section navigation */}

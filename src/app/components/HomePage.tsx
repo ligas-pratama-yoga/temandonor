@@ -243,7 +243,7 @@ export default function HomePage() {
   const SecondaryIcon = cfg.secondaryBtn?.icon;
 
   return (
-    <div className="min-h-screen bg-[#F7F7FB]">
+    <div className="min-h-screen bg-[#F7F7FB] dark:bg-[#0d0d15] transition-colors">
       {/* Dynamic Hero */}
       <section
         className="relative text-white py-16 md:py-24 overflow-hidden"

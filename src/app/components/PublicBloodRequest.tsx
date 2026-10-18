@@ -87,7 +87,7 @@ export default function PublicBloodRequest() {
   }
 
   return (
-    <div className="min-h-screen py-8 bg-[#F7F7FB]">
+    <div className="min-h-screen py-8 bg-[#F7F7FB] dark:bg-[#0d0d15] transition-colors">
       <div className="max-w-3xl mx-auto px-4">
         
         <button onClick={() => navigate(-1)} className="flex items-center gap-2 text-sm font-semibold text-[#4A4A6A] hover:text-[#C0392B] mb-6 transition-colors">

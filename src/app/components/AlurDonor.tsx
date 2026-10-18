@@ -168,7 +168,7 @@ export default function AlurDonor() {
   });
 
   return (
-    <div className="min-h-screen py-8 bg-[#F7F7FB] text-[#1A1A2E]">
+    <div className="min-h-screen py-8 bg-[#F7F7FB] dark:bg-[#0d0d15] text-[#1A1A2E] dark:text-white transition-colors">
       <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
 
         {/* Header Section */}

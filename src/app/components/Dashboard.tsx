@@ -251,23 +251,26 @@ export default function Dashboard() {
 
         {/* ── Tabs Navigation ─────────────────────────────────── */}
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)}>
-          <TabsList className="bg-white dark:bg-[#13131f] border border-border rounded-xl p-1 mb-6 flex overflow-x-auto max-w-full gap-1 h-auto no-scrollbar flex-nowrap shrink-0">
-            {[
-              { value: 'charts', label: 'Grafik & Analitik', icon: TrendingUp },
-              { value: 'inventory', label: 'Tabel Inventori', icon: Droplets },
-              { value: 'activities', label: 'Riwayat Aktivitas', icon: RefreshCw },
-              { value: 'events', label: 'Agenda Event', icon: Calendar },
-            ].map(({ value, label, icon: Icon }) => (
-              <TabsTrigger
-                key={value}
-                value={value}
-                className="rounded-lg text-xs sm:text-sm px-3.5 py-2 data-[state=active]:bg-[#C0392B] data-[state=active]:text-white data-[state=active]:shadow-xs flex items-center gap-1.5 font-semibold transition-all"
-              >
-                <Icon className="w-3.5 h-3.5" />
-                {label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
+          {/* Outer scroll wrapper prevents Radix justify-center from clipping first tab */}
+          <div className="w-full overflow-x-auto pb-1 mb-6" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+            <TabsList className="inline-flex w-max min-w-full bg-white dark:bg-[#13131f] border border-border rounded-xl p-1 gap-1 h-auto justify-start flex-nowrap">
+              {[
+                { value: 'charts', label: 'Grafik & Analitik', icon: TrendingUp },
+                { value: 'inventory', label: 'Tabel Inventori', icon: Droplets },
+                { value: 'activities', label: 'Riwayat Aktivitas', icon: RefreshCw },
+                { value: 'events', label: 'Agenda Event', icon: Calendar },
+              ].map(({ value, label, icon: Icon }) => (
+                <TabsTrigger
+                  key={value}
+                  value={value}
+                  className="shrink-0 whitespace-nowrap rounded-lg text-xs sm:text-sm px-3.5 py-2 data-[state=active]:bg-[#C0392B] data-[state=active]:text-white data-[state=active]:shadow-xs flex items-center gap-1.5 font-semibold transition-all"
+                >
+                  <Icon className="w-3.5 h-3.5 shrink-0" />
+                  {label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </div>
 
           {/* ── Tab: Grafik & Analitik ────────────────────────── */}
           <TabsContent value="charts" className="space-y-6">

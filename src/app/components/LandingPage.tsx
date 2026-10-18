@@ -94,7 +94,7 @@ export default function LandingPage() {
   ];
 
   return (
-    <div className="min-h-screen bg-[#F7F7FB] flex flex-col">
+    <div className="min-h-screen bg-[#F7F7FB] dark:bg-[#0d0d15] flex flex-col transition-colors">
 
       {/* ═══════════ HERO SECTION ═══════════ */}
       <section
@@ -161,7 +161,7 @@ export default function LandingPage() {
       </section>
 
       {/* ═══════════ STATS BAR ═══════════ */}
-      <section className="py-12 bg-white border-b border-border">
+      <section className="py-12 bg-white dark:bg-[#13131f] border-b border-border">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-8 text-center">
             {[
@@ -183,17 +183,17 @@ export default function LandingPage() {
       </section>
 
       {/* ═══════════ TENTANG PLATFORM ═══════════ */}
-      <section id="tentang" className="py-20 bg-[#F7F7FB]">
+      <section id="tentang" className="py-20 bg-[#F7F7FB] dark:bg-[#0d0d15]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex flex-col md:flex-row items-center gap-16">
             <div className="flex-1">
-              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#FDEDEC] text-[#C0392B] font-bold text-xs mb-4">
+              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#FDEDEC] dark:bg-[#2a1218] text-[#C0392B] font-bold text-xs mb-4">
                 <Globe className="w-4 h-4" /> Tentang Platform
               </div>
-              <h2 className="text-3xl font-extrabold text-[#1A1A2E] mb-6" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+              <h2 className="text-3xl font-extrabold text-[#1A1A2E] dark:text-white mb-6" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
                 Satu Platform, Seluruh Ekosistem Donor Darah Se-Indonesia
               </h2>
-              <p className="text-[#4A4A6A] leading-relaxed mb-6">
+              <p className="text-[#4A4A6A] dark:text-[#b8b8d8] leading-relaxed mb-6">
                 TemanDonor! lahir dari kebutuhan untuk mengatasi keterlambatan distribusi kantong darah di seluruh Indonesia.
                 Dengan menghubungkan seluruh stakeholder — dari PMI, pendonor sukarela, hingga kurir — dalam satu
                 sistem digital terintegrasi, kami mempercepat respons darurat dan mengurangi risiko kekurangan stok secara drastis.
@@ -205,17 +205,17 @@ export default function LandingPage() {
                   { icon: Globe, label: 'Akses Multi-device 24/7', color: '#27AE60' },
                   { icon: Activity, label: 'Dashboard Real-time', color: '#8E44AD' },
                 ].map((item, idx) => (
-                  <div key={idx} className="flex items-center gap-3 bg-white p-3 rounded-xl border border-border">
+                  <div key={idx} className="flex items-center gap-3 bg-white dark:bg-[#13131f] p-3 rounded-xl border border-border">
                     <item.icon className="w-5 h-5 flex-shrink-0" style={{ color: item.color }} />
-                    <span className="text-sm font-semibold text-[#1A1A2E]">{item.label}</span>
+                    <span className="text-sm font-semibold text-[#1A1A2E] dark:text-white">{item.label}</span>
                   </div>
                 ))}
               </div>
             </div>
 
             {/* Pie Chart: Distribusi Per PMI */}
-            <div className="flex-1 w-full bg-white p-8 rounded-3xl border border-border shadow-sm">
-              <h3 className="font-bold text-[#1A1A2E] mb-2 text-center" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>Distribusi Stok per Unit PMI</h3>
+            <div className="flex-1 w-full bg-white dark:bg-[#13131f] p-8 rounded-3xl border border-border shadow-sm">
+              <h3 className="font-bold text-[#1A1A2E] dark:text-white mb-2 text-center" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>Distribusi Stok per Unit PMI</h3>
               <p className="text-xs text-[#9B9BB5] text-center mb-6">Total kantong darah tersedia di masing-masing PMI</p>
               <div className="flex items-center justify-center h-56">
                 <svg viewBox="0 0 200 200" className="w-48 h-48">
@@ -229,8 +229,8 @@ export default function LandingPage() {
                   <circle cx="100" cy="100" r="70" fill="transparent" stroke="#8E44AD" strokeWidth="18" strokeDasharray="118.8 440" strokeDashoffset="-321.2" transform="rotate(-90 100 100)" strokeLinecap="round" />
                   
                   {/* Center Text */}
-                  <text x="100" y="98" textAnchor="middle" className="text-xl font-extrabold fill-[#1A1A2E]" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>1.000</text>
-                  <text x="100" y="116" textAnchor="middle" className="text-[10px] font-bold fill-[#9B9BB5] uppercase tracking-wider">Kantong</text>
+                  <text x="100" y="98" textAnchor="middle" className="text-xl font-extrabold fill-[#1A1A2E]" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: '16px', fontWeight: 800 }}>1.000</text>
+                  <text x="100" y="116" textAnchor="middle" className="fill-[#9B9BB5]" style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Kantong</text>
                 </svg>
               </div>
               <div className="flex justify-center gap-6 mt-4">
@@ -247,13 +247,13 @@ export default function LandingPage() {
       </section>
 
       {/* ═══════════ FITUR UNGGULAN (6 cards) ═══════════ */}
-      <section className="py-20 bg-white">
+      <section className="py-20 bg-white dark:bg-[#13131f]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-16">
-            <h2 className="text-3xl font-extrabold text-[#1A1A2E] mb-4" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+            <h2 className="text-3xl font-extrabold text-[#1A1A2E] dark:text-white mb-4" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
               Fitur Unggulan Platform
             </h2>
-            <p className="text-[#4A4A6A] max-w-2xl mx-auto">
+            <p className="text-[#4A4A6A] dark:text-[#b8b8d8] max-w-2xl mx-auto">
               Berbagai fitur cerdas yang didesain khusus untuk mempercepat respons penanganan dan mempermudah siklus rantai pasok kantong darah di seluruh Indonesia.
             </p>
           </div>
@@ -262,12 +262,12 @@ export default function LandingPage() {
             {features.map((f, i) => {
               const Icon = f.icon;
               return (
-                <div key={i} className="bg-[#F7F7FB] p-6 rounded-3xl border border-border hover:shadow-xl hover:-translate-y-1 transition-all duration-300 group">
+                <div key={i} className="bg-[#F7F7FB] dark:bg-[#0d0d15] p-6 rounded-3xl border border-border hover:shadow-xl hover:-translate-y-1 transition-all duration-300 group">
                   <div className={`w-14 h-14 rounded-2xl flex items-center justify-center mb-5 ${f.bg} ${f.color} group-hover:scale-110 transition-transform`}>
                     <Icon className="w-7 h-7" />
                   </div>
-                  <h3 className="text-lg font-bold text-[#1A1A2E] mb-2">{f.title}</h3>
-                  <p className="text-sm text-[#4A4A6A] leading-relaxed">{f.desc}</p>
+                  <h3 className="text-lg font-bold text-[#1A1A2E] dark:text-white mb-2">{f.title}</h3>
+                  <p className="text-sm text-[#4A4A6A] dark:text-[#b8b8d8] leading-relaxed">{f.desc}</p>
                 </div>
               );
             })}
@@ -277,38 +277,38 @@ export default function LandingPage() {
 
       {/* ═══════════ GRAFIK STOK DARAH (Bar Chart) ═══════════ */}
       {/* ═══════════ BLOOD STOCK BAR CHART (CSS) ═══════════ */}
-      <section className="py-20 bg-[#F7F7FB] border-t border-border">
+      <section className="py-20 bg-[#F7F7FB] dark:bg-[#0d0d15] border-t border-border">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex flex-col md:flex-row items-center gap-12">
             <div className="flex-1">
-              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-red-50 text-[#C0392B] font-bold text-xs mb-4">
+              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-red-50 dark:bg-[#2a1218] text-[#C0392B] font-bold text-xs mb-4">
                 <BarChart2 className="w-4 h-4" /> Live Data Simulasi
               </div>
-              <h2 className="text-3xl font-extrabold text-[#1A1A2E] mb-4" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+              <h2 className="text-3xl font-extrabold text-[#1A1A2E] dark:text-white mb-4" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
                 Ketersediaan Darah Di Seluruh Indonesia
               </h2>
-              <p className="text-[#4A4A6A] leading-relaxed mb-6">
+              <p className="text-[#4A4A6A] dark:text-[#b8b8d8] leading-relaxed mb-6">
                 Sistem kami terus melacak dan memonitor stok kantong darah secara real-time dari seluruh unit Palang Merah Indonesia di seluruh wilayah Indonesia, memastikan kebutuhan darurat dapat terpenuhi dalam hitungan menit.
               </p>
               <ul className="space-y-3">
                 <li className="flex items-start gap-2">
                   <CheckCircle className="w-5 h-5 text-[#27AE60] flex-shrink-0" />
-                  <span className="text-[#4A4A6A] text-sm">Monitoring ketersediaan 8 golongan darah sekaligus.</span>
+                  <span className="text-[#4A4A6A] dark:text-[#b8b8d8] text-sm">Monitoring ketersediaan 8 golongan darah sekaligus.</span>
                 </li>
                 <li className="flex items-start gap-2">
                   <CheckCircle className="w-5 h-5 text-[#27AE60] flex-shrink-0" />
-                  <span className="text-[#4A4A6A] text-sm">Sistem peringatan otomatis saat stok menyentuh batas kritis.</span>
+                  <span className="text-[#4A4A6A] dark:text-[#b8b8d8] text-sm">Sistem peringatan otomatis saat stok menyentuh batas kritis.</span>
                 </li>
                 <li className="flex items-start gap-2">
                   <CheckCircle className="w-5 h-5 text-[#27AE60] flex-shrink-0" />
-                  <span className="text-[#4A4A6A] text-sm">Transparansi data distribusi darah terintegrasi.</span>
+                  <span className="text-[#4A4A6A] dark:text-[#b8b8d8] text-sm">Transparansi data distribusi darah terintegrasi.</span>
                 </li>
               </ul>
             </div>
 
             {/* CSS Bar Chart — zero dependency */}
-            <div className="flex-1 w-full bg-white p-6 rounded-3xl border border-border shadow-sm">
-              <h3 className="font-bold text-[#1A1A2E] mb-6 text-center">Grafik Stok Darah (Ilustrasi)</h3>
+            <div className="flex-1 w-full bg-white dark:bg-[#13131f] p-6 rounded-3xl border border-border shadow-sm">
+              <h3 className="font-bold text-[#1A1A2E] dark:text-white mb-6 text-center">Grafik Stok Darah (Ilustrasi)</h3>
               <div className="flex items-end gap-1.5 h-44">
                 {bloodStockData.map((d) => (
                   <div key={d.name} className="flex flex-col items-center flex-1 gap-1">

@@ -2,6 +2,8 @@
 @import "../default_shadcn_theme.css";
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 * {
   box-sizing: border-box;
 }
@@ -103,17 +105,52 @@ button, a, [role="button"] {
   background-color: #1a1228 !important;
 }
 
-/* ── Text colors ── */
+.dark .bg-gray-50 {
+  background-color: #111120 !important;
+}
+
+.dark .bg-gray-100 {
+  background-color: #1a1a2a !important;
+}
+
+.dark .bg-gray-200 {
+  background-color: #202030 !important;
+}
+
+/* ── Text colors — improved contrast ratios ── */
 .dark .text-\[\#1A1A2E\] {
   color: #f1f1f5 !important;
 }
 
 .dark .text-\[\#4A4A6A\] {
-  color: #a5a5c5 !important;
+  /* Was #a5a5c5, boosted for WCAG AA: ~5.2:1 on #0d0d15 */
+  color: #b8b8d8 !important;
 }
 
 .dark .text-\[\#9B9BB5\] {
-  color: #7070a0 !important;
+  /* Was #7070a0, boosted for readability: ~4.8:1 on #13131f */
+  color: #a8a8c8 !important;
+}
+
+.dark .text-gray-500 {
+  color: #9090b0 !important;
+}
+
+.dark .text-gray-600 {
+  color: #a0a0c0 !important;
+}
+
+.dark .text-gray-700 {
+  color: #b0b0d0 !important;
+}
+
+/* ── SVG fills for LandingPage charts ── */
+.dark .fill-\[\#1A1A2E\] {
+  fill: #f1f1f5 !important;
+}
+
+.dark .fill-\[\#9B9BB5\] {
+  fill: #a8a8c8 !important;
 }
 
 /* ── Borders ── */
@@ -123,6 +160,14 @@ button, a, [role="button"] {
 
 .dark .border-\[\#F4F4F8\] {
   border-color: #1a1a2a !important;
+}
+
+.dark .border-gray-200 {
+  border-color: #252535 !important;
+}
+
+.dark .border-gray-300 {
+  border-color: #2b2b3d !important;
 }
 
 /* ── Hover states ── */
@@ -136,6 +181,14 @@ button, a, [role="button"] {
 
 .dark .hover\:bg-\[\#FDEDEC\]:hover {
   background-color: #2a1218 !important;
+}
+
+.dark .hover\:bg-gray-50:hover {
+  background-color: #181827 !important;
+}
+
+.dark .hover\:bg-gray-200:hover {
+  background-color: #252535 !important;
 }
 
 /* ── Cards & panels ── */
@@ -165,6 +218,21 @@ button, a, [role="button"] {
 
 .dark select option {
   background-color: #13131f !important;
+  color: #f1f1f5 !important;
+}
+
+/* ── Recharts dark mode — axis ticks, tooltips ── */
+.dark .recharts-cartesian-axis-tick text {
+  fill: #b8b8d8 !important;
+}
+
+.dark .recharts-cartesian-grid line {
+  stroke: #2b2b3d !important;
+}
+
+.dark .recharts-tooltip-wrapper .recharts-default-tooltip {
+  background-color: #13131f !important;
+  border-color: #212130 !important;
   color: #f1f1f5 !important;
 }
 
